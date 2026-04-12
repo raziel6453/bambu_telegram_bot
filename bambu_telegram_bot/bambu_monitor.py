@@ -4,7 +4,7 @@ Bambu Lab Telegram Monitor for Home Assistant Add-on
 Sends print start/finish notifications, progress updates, and Spoolman filament tracking.
 """
 
-import os, sys, time, json, threading, logging, requests, ssl
+import os, sys, time, json, threading, logging, requests, ssl, yaml
 from datetime import datetime
 
 try:
@@ -17,17 +17,42 @@ try:
 except ImportError:
     sys.exit("Missing pyTelegramBotAPI. Run: pip install pyTelegramBotAPI")
 
-# ── Load config from HA Add-on options.json ───────────────
-OPTIONS_PATH = "/data/options.json"
-SPOOLMAN_MAPPING_FILE = "/data/spoolman_mapping.json"
-options = {}
+# ── Load config (Hybrid: HA Add-on or Standalone) ────────
+def load_config():
+    options_path = "/data/options.json"
+    local_config = "config.yaml"
+    local_options = "options.json"
 
-if os.path.exists(OPTIONS_PATH):
-    with open(OPTIONS_PATH) as f:
-        options = json.load(f)
-else:
-    logging.error("No options.json found at /data/options.json. This must be run as an HA Addon.")
-    sys.exit(1)
+    # 1. Try HA Add-on path
+    if os.path.exists(options_path):
+        try:
+            with open(options_path) as f:
+                return json.load(f), "/data"
+        except Exception as e:
+            logging.error(f"Failed to load {options_path}: {e}")
+
+    # 2. Try local config.yaml (standalone fallback)
+    if os.path.exists(local_config):
+        try:
+            with open(local_config) as f:
+                cfg = yaml.safe_load(f)
+                if isinstance(cfg, dict) and "options" in cfg:
+                    return cfg["options"], "."
+        except Exception as e:
+            logging.error(f"Failed to load {local_config}: {e}")
+
+    # 3. Try local options.json (alternative standalone)
+    if os.path.exists(local_options):
+        try:
+            with open(local_options) as f:
+                return json.load(f), "."
+        except Exception as e:
+            logging.error(f"Failed to load {local_options}: {e}")
+
+    return {}, "."
+
+options, data_dir = load_config()
+SPOOLMAN_MAPPING_FILE = os.path.join(data_dir, "spoolman_mapping.json")
 
 PRINTER_IP       = options.get("printer_ip", "")
 PRINTER_SERIAL   = options.get("printer_serial", "")
@@ -40,11 +65,15 @@ LANGUAGE         = options.get("language", "he")
 SPOOLMAN_URL     = options.get("spoolman_url", "").strip().rstrip("/")
 HA_CAMERA_ENTITY = options.get("ha_camera_entity", "").strip()
 HA_LIGHT_ENTITY  = options.get("ha_light_entity", "").strip()
+
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN")
 HA_API_BASE      = "http://supervisor/core/api"
+HA_API_AVAILABLE = SUPERVISOR_TOKEN is not None
 
 if "YOUR_" in PRINTER_IP or not PRINTER_IP:
-    sys.exit("❌ Please fill in the add-on configuration with your printer and Telegram details.")
+    if not options:
+        sys.exit("❌ Error: No configuration found. Please clarify if you are running as an HA Add-on or provide a config.yaml file.")
+    sys.exit("❌ Error: Please fill in the configuration with your printer and Telegram details.")
 
 # ── Logging ───────────────────────────────────────────────
 logging.basicConfig(
@@ -324,9 +353,11 @@ def send_status(message):
     request_pushall()
     _status_refresh.wait(timeout=3)
 
-    # Fetch current light status from HA
-    light_state, _ = get_ha_light_state(HA_LIGHT_ENTITY)
-    light_str = t("light_on") if light_state == "on" else t("light_off")
+    # Fetch current light status from HA if available
+    light_str = ""
+    if HA_API_AVAILABLE:
+        light_state, _ = get_ha_light_state(HA_LIGHT_ENTITY)
+        light_str = "\n" + (t("light_on") if light_state == "on" else t("light_off"))
 
     with _lock:
         if _state["printing"]:
@@ -338,14 +369,15 @@ def send_status(message):
         else:
             res = t("status_idle", light_status=light_str)
     
-    # Try to add a snapshot if camera is available
-    img_bytes, error = get_ha_snapshot(HA_CAMERA_ENTITY)
-    if img_bytes:
-        try:
-            bot.send_photo(message.chat.id, img_bytes, caption=res)
-            return
-        except Exception as e:
-            log.error(f"Failed to send status photo: {e}")
+    # Try to add a snapshot if HA is available
+    if HA_API_AVAILABLE:
+        img_bytes, error = get_ha_snapshot(HA_CAMERA_ENTITY)
+        if img_bytes:
+            try:
+                bot.send_photo(message.chat.id, img_bytes, caption=res)
+                return
+            except Exception as e:
+                log.error(f"Failed to send status photo: {e}")
             
     # Fallback to text if snapshot fails or is not enabled or no HA token
     bot.reply_to(message, res)
@@ -494,6 +526,10 @@ def handle_cam(message):
     """Fetches and sends a live camera snapshot from Home Assistant."""
     if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
     
+    if not HA_API_AVAILABLE:
+        bot.reply_to(message, t("ha_no_api"))
+        return
+
     # Notify user we are working on it (chat action "upload_photo")
     try:
         bot.send_chat_action(message.chat.id, 'upload_photo')
@@ -516,6 +552,10 @@ def handle_light(message):
     """Toggles the printer light in Home Assistant."""
     if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
     
+    if not HA_API_AVAILABLE:
+        bot.reply_to(message, t("ha_no_api"))
+        return
+
     current_state, entity_id = get_ha_light_state(HA_LIGHT_ENTITY)
     if not entity_id:
         bot.reply_to(message, t("light_no_entity"))

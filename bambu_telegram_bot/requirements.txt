@@ -4,3 +4,4 @@ flask
 flask-cors
 psutil
 pyTelegramBotAPI
+PyYAML

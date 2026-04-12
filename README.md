@@ -27,31 +27,23 @@ git clone https://github.com/raziel6453/bambu_telegram_bot.git
 cd bambu_telegram_bot
 ```
 
-### 2. Configure `config.yaml`
+### 2. Configure Settings
+The bot supports two ways to load settings in standalone mode:
 
-Edit `bambu_telegram_bot/config.yaml` with your credentials:
+#### Option A: Edit `config.yaml` (Recommended)
+Edit the `options:` section in `bambu_telegram_bot/config.yaml`:
+- Set your printer details and Telegram tokens.
 
-```yaml
-printer_ip: "192.168.1.50"          # Your printer's local IP
-printer_serial: "01P00A123456789"   # Serial number (found in Bambu Studio)
-printer_password: "12345678"        # Printer access code (LAN-only mode)
-bambu_username: "user@example.com"  # Bambu Cloud account (for cloud mode)
-bambu_password: "yourpassword"
-telegram_token: "YOUR_BOT_TOKEN"    # From @BotFather
-telegram_chat_id: "YOUR_CHAT_ID"   # Your Telegram user/group ID
-language: "en"                      # "en" or "he"
-spoolman_url: "http://spoolman:7912" # Optional — leave blank to disable
-```
+#### Option B: Use `options.json`
+Create a file named `options.json` in the project root with your settings.
 
-### 3. Run with Docker
-
+### 3. Run with Docker (Standalone)
 ```bash
 docker build -t bambu-monitor ./bambu_telegram_bot
-docker run -d --name bambu-monitor bambu-monitor
+docker run -d --name bambu-monitor -v $(pwd)/config.yaml:/app/config.yaml bambu-monitor
 ```
 
 ### 4. Run directly (Python)
-
 ```bash
 cd bambu_telegram_bot
 pip install -r requirements.txt
