@@ -109,25 +109,25 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 # ── Messages ──────────────────────────────────────────────
 STRINGS = {
     "he": {
-        "print_start":    "🖨️ ההדפסה התחילה!\nקובץ: {filename}\nמשקל: {weight}g\nמשך משוער: {eta}",
-        "print_done":     "✅ ההדפסה הסתיימה!\nקובץ: {filename}\nמשקל: {weight}g\nסה\"כ זמן: {duration}",
+        "print_start":    "🖨️ ההדפסה התחילה!\nקובץ: {filename}\nמשקל: {weight}\nמשך משוער: {eta}",
+        "print_done":     "✅ ההדפסה הסתיימה!\nקובץ: {filename}\nמשקל: {weight}\nסה\"כ בזמן: {duration}",
         "print_failed":   "❌ ההדפסה נכשלה.\nקובץ: {filename}",
         "progress":       "📊 התקדמות: {pct}%\nנותר: {remaining}",
-        "low_filament":   "⚠️ נגמר חוט! סלוט {slot} נותר בערך: {grams}g",
+        "low_filament":   "⚠️ נגמר חוט! סלוט {slot} נותר בערך: {grams}",
         "connected":      "✅ הבוט מחובר ועובד!",
         "disconnected":   "🔴 הפסקתי עבודה.",
-        "status_printing": "🖨️ מדפיס כעת...\nקובץ: {filename}\nמשקל: {weight}g\nהתקדמות: {pct}%\nזמן נותר: {eta}\n{light_status}",
+        "status_printing": "🖨️ מדפיס כעת...\nקובץ: {filename}\nמשקל: {weight}\nהתקדמות: {pct}%\nזמן נותר: {eta}\n{light_status}",
         "status_idle":    "💤 המדפסת כרגע במצב המתנה.\n{light_status}",
         "ams_title":      "📦 סטטוס מערכת ה-AMS:\n",
-        "ams_slot":       "סלוט {slot}: {emoji} סוג: {type} ({brand}) - נותר משוער: {grams}g\n",
-        "ams_spoolman_slot": "סלוט {slot}: {emoji} סוג: {brand} {material} - נותר: {grams}g (Spoolman)\n",
+        "ams_slot":       "סלוט {slot}: {emoji} סוג: {type} ({brand}) - נותר משוער: {grams}\n",
+        "ams_spoolman_slot": "סלוט {slot}: {emoji} סוג: {brand} {material} - נותר: {grams} (Spoolman)\n",
         "ams_spoolman_fail": "סלוט {slot}: ❌ שגיאת חיבור ל-Spoolman (ID {sid})\n",
         "ams_empty":      "סלוט {slot}: ❌ ריק\n",
         "spoolman_success": "✅ מאגר Spoolman ID {sid} שויך לסלוט {slot} בהצלחה. החסרה אוטומטית הופעלה.",
         "spoolman_fail": "❌ שגיאה: יש להקליד במבנה: /spoolman <מזהה_ספול> <סלוט_1-4>",
         "spoolman_not_enabled": "❌ Spoolman לא הוגדר בהגדרות Addon של Home Assistant.",
         "spools_title":   "📦 מאגר Spoolman:\n",
-        "spools_item":    "ID: #{id} | {emoji} {brand} {material} | משקל נותר: {grams}g\n",
+        "spools_item":    "ID: #{id} | {emoji} {brand} {material} | משקל נותר: {grams}\n",
         "spools_empty":   "המאגר ריק.\n",
         "help": (
             "🖨️ *Bambu Telegram Monitor — פקודות זמינות:*\n\n"
@@ -150,25 +150,25 @@ STRINGS = {
         "ha_no_api":      "❌ הבוט לא רץ כ-Add-on עם הרשאות API של Home Assistant."
     },
     "en": {
-        "print_start":    "🖨️ Print started!\nFile: {filename}\nWeight: {weight}g\nETA: {eta}",
-        "print_done":     "✅ Print finished!\nFile: {filename}\nWeight: {weight}g\nTotal time: {duration}",
+        "print_start":    "🖨️ Print started!\nFile: {filename}\nWeight: {weight}\nETA: {eta}",
+        "print_done":     "✅ Print finished!\nFile: {filename}\nWeight: {weight}\nTotal time: {duration}",
         "print_failed":   "❌ Print failed.\nFile: {filename}",
         "progress":       "📊 Progress: {pct}%\nRemaining: {remaining}",
-        "low_filament":   "⚠️ Low filament! Slot {slot}: ~{grams}g left",
+        "low_filament":   "⚠️ Low filament! Slot {slot}: ~{grams} left",
         "connected":      "✅ Bot connected and running!",
         "disconnected":   "🔴 Bot stopped.",
-        "status_printing": "🖨️ Currently Printing...\nFile: {filename}\nWeight: {weight}g\nProgress: {pct}%\nETA: {eta}\n{light_status}",
+        "status_printing": "🖨️ Currently Printing...\nFile: {filename}\nWeight: {weight}\nProgress: {pct}%\nETA: {eta}\n{light_status}",
         "status_idle":    "💤 Printer is currently idle.\n{light_status}",
         "ams_title":      "📦 AMS Status:\n",
-        "ams_slot":       "Slot {slot}: {emoji} Type: {type} ({brand}) - Estimated: {grams}g\n",
-        "ams_spoolman_slot": "Slot {slot}: {emoji} Type: {brand} {material} - Remaining: {grams}g (Spoolman)\n",
+        "ams_slot":       "Slot {slot}: {emoji} Type: {type} ({brand}) - Estimated: {grams}\n",
+        "ams_spoolman_slot": "Slot {slot}: {emoji} Type: {brand} {material} - Remaining: {grams} (Spoolman)\n",
         "ams_spoolman_fail": "Slot {slot}: ❌ Spoolman Connection Error (ID {sid})\n",
         "ams_empty":      "Slot {slot}: ❌ Empty\n",
         "spoolman_success": "✅ Spoolman ID {sid} mapped to Slot {slot}. Auto-subtraction enabled.",
         "spoolman_fail": "❌ Error: Use format: /spoolman <spool_id> <slot_1-4>",
         "spoolman_not_enabled": "❌ Spoolman URL is not configured in Home Assistant Add-on options.",
         "spools_title":   "📦 Spoolman Inventory:\n",
-        "spools_item":    "ID: #{id} | {emoji} {brand} {material} | Weight: {grams}g\n",
+        "spools_item":    "ID: #{id} | {emoji} {brand} {material} | Weight: {grams}\n",
         "spools_empty":   "Inventory is empty.\n",
         "help": (
             "🖨️ *Bambu Telegram Monitor — Available Commands:*\n\n"
@@ -384,9 +384,9 @@ def send_status(message):
             # Prioritize HA weight sensor if it returned a valid number
             weight = ha_weight if ha_weight is not None else _state["print_weight"]
             
-            # Use float formatting to ensure a decimal point (e.g. 0.0)
+            # Use float formatting to ensure a decimal point (e.g. 0.0) and add single 'g'
             try:
-                weight_str = f"{float(weight):.1f}"
+                weight_str = f"{float(weight):.1f}g"
             except:
                 weight_str = "Unknown"
             
@@ -716,7 +716,11 @@ def on_message(client, userdata, msg):
             _state["last_milestone"] = 0
             eta = _format_minutes(mc_remaining)
             log.info(f"Print started: {filename}")
-            send_telegram(t("print_start", filename=filename or "–", weight=_state["print_weight"], eta=eta))
+            
+            # Format weight for notification
+            w_disp = f"{float(_state['print_weight']):.1f}g"
+            
+            send_telegram(t("print_start", filename=filename or "–", weight=w_disp, eta=eta))
 
         # Print finished
         elif gcode_state == "FINISH" and was_printing:
