@@ -5,6 +5,7 @@ Sends print start/finish notifications, progress updates, and filament tracking.
 """
 
 import os, sys, time, json, threading, logging, requests, ssl
+from datetime import datetime
 
 try:
     import paho.mqtt.client as mqtt
@@ -35,7 +36,6 @@ BAMBU_PASSWORD   = options.get("bambu_password", "")
 TELEGRAM_TOKEN   = options.get("telegram_token", "")
 TELEGRAM_CHAT_ID = options.get("telegram_chat_id", "")
 LANGUAGE         = options.get("language", "he")
-AMS_SLOTS        = {}
 
 if "YOUR_" in PRINTER_IP or not PRINTER_IP:
     sys.exit("❌ Please fill in the add-on configuration with your printer and Telegram details.")
@@ -60,22 +60,28 @@ STRINGS = {
         "print_done":     "✅ ההדפסה הסתיימה!\nקובץ: {filename}\nסה\"כ זמן: {duration}",
         "print_failed":   "❌ ההדפסה נכשלה.\nקובץ: {filename}",
         "progress":       "📊 התקדמות: {pct}%\nנותר: {remaining}",
-        "low_filament":   "⚠️ נגמר חוט! סלוט {slot} נותר: {grams}g",
+        "low_filament":   "⚠️ נגמר חוט! סלוט {slot} נותר בערך: {grams}g",
         "connected":      "✅ הבוט מחובר ועובד!",
         "disconnected":   "🔴 הפסקתי עבודה.",
         "status_printing": "🖨️ מדפיס כעת...\nקובץ: {filename}\nהתקדמות: {pct}%\nזמן נותר: {eta}",
         "status_idle":    "💤 המדפסת כרגע במצב המתנה.",
+        "ams_title":      "📦 סטטוס מערכת ה-AMS:\n",
+        "ams_slot":       "סלוט {slot}: {emoji} סוג: {type} ({brand}) - נותר: {grams}g\n",
+        "ams_empty":      "סלוט {slot}: ❌ ריק\n",
     },
     "en": {
         "print_start":    "🖨️ Print started!\nFile: {filename}\nETA: {eta}",
         "print_done":     "✅ Print finished!\nFile: {filename}\nTotal time: {duration}",
         "print_failed":   "❌ Print failed.\nFile: {filename}",
         "progress":       "📊 Progress: {pct}%\nRemaining: {remaining}",
-        "low_filament":   "⚠️ Low filament! Slot {slot}: {grams}g left",
+        "low_filament":   "⚠️ Low filament! Slot {slot}: ~{grams}g left",
         "connected":      "✅ Bot connected and running!",
         "disconnected":   "🔴 Bot stopped.",
         "status_printing": "🖨️ Currently Printing...\nFile: {filename}\nProgress: {pct}%\nETA: {eta}",
         "status_idle":    "💤 Printer is currently idle.",
+        "ams_title":      "📦 AMS Status:\n",
+        "ams_slot":       "Slot {slot}: {emoji} Type: {type} ({brand}) - Remaining: {grams}g\n",
+        "ams_empty":      "Slot {slot}: ❌ Empty\n",
     }
 }
 
@@ -83,8 +89,22 @@ def t(key, **kwargs):
     tmpl = STRINGS.get(LANGUAGE, STRINGS["en"]).get(key, key)
     return tmpl.format(**kwargs)
 
+def color_to_emoji(hexcode):
+    if not hexcode or len(hexcode) < 6: return "🧵"
+    try:
+        r, g, b = int(hexcode[0:2], 16), int(hexcode[2:4], 16), int(hexcode[4:6], 16)
+        if r > 200 and g > 200 and b > 200: return "⚪"
+        if r < 50 and g < 50 and b < 50: return "⚫"
+        if r > 200 and g < 100 and b < 100: return "🔴"
+        if r < 100 and g > 200 and b < 100: return "🟢"
+        if r < 100 and g < 100 and b > 200: return "🔵"
+        if r > 200 and g > 200 and b < 100: return "🟡"
+        if r > 200 and g > 100 and b < 100: return "🟠"
+    except Exception:
+        pass
+    return "🧵"
+
 # ── Telegram helpers ──────────────────────────────────────
-from datetime import datetime
 def send_telegram(text):
     try:
         bot.send_message(TELEGRAM_CHAT_ID, text)
@@ -101,6 +121,8 @@ _state = {
     "last_milestone": 0,
     "gcode_state": "",
 }
+_ams_state = {}
+_alerted_slots = set()
 _lock = threading.Lock()
 
 def _format_minutes(mins):
@@ -117,7 +139,6 @@ def _format_duration(seconds):
 # ── Interactive Bot Commands ──────────────────────────────
 @bot.message_handler(commands=['status'])
 def send_status(message):
-    # Only reply to the configured owner
     if str(message.chat.id) != str(TELEGRAM_CHAT_ID):
         return
         
@@ -130,6 +151,31 @@ def send_status(message):
         else:
             res = t("status_idle")
             
+    bot.reply_to(message, res)
+
+@bot.message_handler(commands=['ams'])
+def send_ams(message):
+    if str(message.chat.id) != str(TELEGRAM_CHAT_ID):
+        return
+
+    with _lock:
+        if not _ams_state:
+            bot.reply_to(message, "Waiting for AMS data from printer...")
+            return
+
+        res = t("ams_title")
+        # Ensure we always iterate 4 slots (0 to 3) for standard AMS
+        for i in range(4):
+            slot_data = _ams_state.get(str(i))
+            if not slot_data or slot_data.get("type") == "Unknown" or slot_data.get("remain") < 0:
+                res += t("ams_empty", slot=i+1)
+            else:
+                emoji = color_to_emoji(slot_data.get("color"))
+                # Convert percentage remain to estimated grams (Assume 1000g spool = 100%)
+                remain_pct = slot_data.get("remain", 0)
+                grams = remain_pct * 10
+                res += t("ams_slot", slot=i+1, emoji=emoji, type=slot_data["type"], brand=slot_data["brand"], grams=grams)
+
     bot.reply_to(message, res)
 
 # ── MQTT callbacks ────────────────────────────────────────
@@ -154,6 +200,7 @@ def on_message(client, userdata, msg):
         return
 
     with _lock:
+        # Process Print State
         gcode_state  = print_data.get("gcode_state", _state["gcode_state"])
         mc_percent   = print_data.get("mc_percent", _state["mc_percent"])
         mc_remaining = print_data.get("mc_remaining_time", _state["mc_remaining_time"])
@@ -200,11 +247,30 @@ def on_message(client, userdata, msg):
                     send_telegram(t("progress", pct=milestone, remaining=_format_minutes(mc_remaining)))
                     break
 
-        # Low filament check
-        for slot_id, slot_info in AMS_SLOTS.items():
-            weight = slot_info.get("weight_g", 9999)
-            if weight < 100:
-                send_telegram(t("low_filament", slot=slot_id, grams=weight))
+        # Process AMS State
+        ams_data = print_data.get("ams", {}).get("ams", [])
+        for ams_unit in ams_data:
+            for tray in ams_unit.get("tray", []):
+                slot_id = tray.get("id")
+                if slot_id is None: continue
+                remain_pct = tray.get("remain", -1)
+
+                _ams_state[str(slot_id)] = {
+                    "type": tray.get("tray_type", "Unknown"),
+                    "color": tray.get("tray_color", "FFFFFF"),
+                    "brand": tray.get("tray_sub_brands", ""),
+                    "remain": remain_pct
+                }
+
+                # Alerts based on threshold
+                if 0 <= remain_pct < 10:  # Less than 10% (~100g)
+                    if slot_id not in _alerted_slots:
+                        grams = remain_pct * 10
+                        send_telegram(t("low_filament", slot=int(slot_id)+1, grams=grams))
+                        _alerted_slots.add(slot_id)
+                elif remain_pct >= 10:
+                    if slot_id in _alerted_slots:
+                        _alerted_slots.remove(slot_id)
 
 # ── Bambu Cloud MQTT ─────────────────────────────────────────
 def get_bambu_token():
