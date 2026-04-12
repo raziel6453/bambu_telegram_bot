@@ -604,12 +604,26 @@ def on_message(client, userdata, msg):
             except Exception:
                 pass
 
-        # Process Print State
+        # Process Print State & Weight Detection
         gcode_state     = print_data.get("gcode_state", _state["gcode_state"])
         mc_percent      = print_data.get("mc_percent", _state["mc_percent"])
         mc_remaining    = print_data.get("mc_remaining_time", _state["mc_remaining_time"])
         filename        = print_data.get("subtask_name", _state["filename"]) or _state["filename"]
-        weight_estimate = print_data.get("print_weight", print_data.get("subtask_weight", _state["print_weight"]))
+        
+        # Try multiple fields for weight (grams or milligrams fallbacks)
+        new_weight = _state["print_weight"]
+        
+        # 1. Direct grams fields
+        w_grams = print_data.get("subtask_weight") or print_data.get("print_weight")
+        if w_grams and int(w_grams) > 0:
+            new_weight = int(w_grams)
+        else:
+            # 2. Milligrams fallbacks (common in some firmware/local prints)
+            w_mg = print_data.get("total_weight") or print_data.get("weight")
+            if w_mg and int(w_mg) > 0:
+                new_weight = int(int(w_mg) / 1000)
+
+        weight_estimate = new_weight
 
         prev_state   = _state["gcode_state"]
         was_printing = _state["printing"]
