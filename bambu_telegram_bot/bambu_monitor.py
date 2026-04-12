@@ -65,7 +65,7 @@ LANGUAGE         = options.get("language", "he")
 SPOOLMAN_URL     = options.get("spoolman_url", "").strip().rstrip("/")
 HA_CAMERA_ENTITY = options.get("ha_camera_entity", "").strip()
 HA_LIGHT_ENTITY  = options.get("ha_light_entity", "").strip()
-HA_WEIGHT_SENSOR = options.get("ha_weight_sensor", "").strip()
+HA_WEIGHT_ENTITY = options.get("ha_weight_entity", "").strip()
 
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN")
 HA_API_BASE      = "http://supervisor/core/api"
@@ -363,14 +363,14 @@ def send_status(message):
         light_state, _ = get_ha_light_state(HA_LIGHT_ENTITY)
         light_str = "\n" + (t("light_on") if light_state == "on" else t("light_off"))
 
-    # Try to fetch weight from HA sensor if configured and available
+    # Try to fetch weight from HA sensor/entity if configured and available
     ha_weight = None
-    if HA_API_AVAILABLE and HA_WEIGHT_SENSOR:
+    if HA_API_AVAILABLE and HA_WEIGHT_ENTITY:
         try:
-            val, _ = get_ha_light_state(HA_WEIGHT_SENSOR) # Reusing helper for status fetch
+            val, _ = get_ha_light_state(HA_WEIGHT_ENTITY) # Reusing helper for status fetch
             if val and val not in ("unknown", "unavailable"):
                 ha_weight = int(float(val))
-                log.info(f"Fetched weight from HA sensor {HA_WEIGHT_SENSOR}: {ha_weight}g")
+                log.info(f"Fetched weight from HA entity {HA_WEIGHT_ENTITY}: {ha_weight}g")
         except Exception as e:
             log.error(f"Failed to fetch weight from HA sensor: {e}")
 

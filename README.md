@@ -100,7 +100,7 @@ When running as a Home Assistant Add-on, the bot can fetch live snapshots from y
 ### ⚖️ Weight Fallback (HA Add-on only)
 If your printer's MQTT data is missing weight info (shows 0g), you can pull it from HA:
 1. In Home Assistant, find your printer's weight sensor (usually from the Bambu Lab integration).
-2. Enter its ID (e.g., `sensor.p1s_print_weight`) into `ha_weight_sensor` in the config.
+2. Enter its ID (e.g., `sensor.p1s_print_weight`) into `ha_weight_entity` in the config.
 
 > **Note:** All commands are restricted to the configured `telegram_chat_id`. Messages from other users are silently ignored.
 
