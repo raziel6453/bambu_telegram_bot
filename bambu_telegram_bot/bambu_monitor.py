@@ -10,6 +10,11 @@ try:
     import paho.mqtt.client as mqtt
 except ImportError:
     sys.exit("Missing paho-mqtt. Run: pip install paho-mqtt")
+    
+try:
+    import telebot
+except ImportError:
+    sys.exit("Missing pyTelegramBotAPI. Run: pip install pyTelegramBotAPI")
 
 # ── Load config from HA Add-on options.json ───────────────
 OPTIONS_PATH = "/data/options.json"
@@ -45,6 +50,9 @@ logging.basicConfig(
 )
 log = logging.getLogger("bambu")
 
+# ── Telegram Bot Init ─────────────────────────────────────
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+
 # ── Messages ──────────────────────────────────────────────
 STRINGS = {
     "he": {
@@ -55,6 +63,8 @@ STRINGS = {
         "low_filament":   "⚠️ נגמר חוט! סלוט {slot} נותר: {grams}g",
         "connected":      "✅ הבוט מחובר ועובד!",
         "disconnected":   "🔴 הפסקתי עבודה.",
+        "status_printing": "🖨️ מדפיס כעת...\nקובץ: {filename}\nהתקדמות: {pct}%\nזמן נותר: {eta}",
+        "status_idle":    "💤 המדפסת כרגע במצב המתנה.",
     },
     "en": {
         "print_start":    "🖨️ Print started!\nFile: {filename}\nETA: {eta}",
@@ -64,6 +74,8 @@ STRINGS = {
         "low_filament":   "⚠️ Low filament! Slot {slot}: {grams}g left",
         "connected":      "✅ Bot connected and running!",
         "disconnected":   "🔴 Bot stopped.",
+        "status_printing": "🖨️ Currently Printing...\nFile: {filename}\nProgress: {pct}%\nETA: {eta}",
+        "status_idle":    "💤 Printer is currently idle.",
     }
 }
 
@@ -74,11 +86,8 @@ def t(key, **kwargs):
 # ── Telegram helpers ──────────────────────────────────────
 from datetime import datetime
 def send_telegram(text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        r = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=10)
-        if not r.ok:
-            log.warning(f"Telegram error: {r.text}")
+        bot.send_message(TELEGRAM_CHAT_ID, text)
     except Exception as e:
         log.error(f"Telegram send failed: {e}")
 
@@ -104,6 +113,24 @@ def _format_duration(seconds):
     h, rem = divmod(int(seconds), 3600)
     m = rem // 60
     return f"{h}h {m}m" if h else f"{m}m"
+    
+# ── Interactive Bot Commands ──────────────────────────────
+@bot.message_handler(commands=['status'])
+def send_status(message):
+    # Only reply to the configured owner
+    if str(message.chat.id) != str(TELEGRAM_CHAT_ID):
+        return
+        
+    with _lock:
+        if _state["printing"]:
+            filename = _state["filename"] or "Unknown"
+            pct = _state["mc_percent"]
+            eta = _format_minutes(_state["mc_remaining_time"])
+            res = t("status_printing", filename=filename, pct=pct, eta=eta)
+        else:
+            res = t("status_idle")
+            
+    bot.reply_to(message, res)
 
 # ── MQTT callbacks ────────────────────────────────────────
 def on_connect(client, userdata, flags, rc):
@@ -232,6 +259,10 @@ def connect_local_mqtt():
 import socket
 def main():
     log.info("Bambu Monitor Add-on starting...")
+    
+    # Start Telegram polling thread
+    t_bot = threading.Thread(target=bot.infinity_polling, daemon=True)
+    t_bot.start()
 
     # Try local first, fall back to cloud
     client = None
