@@ -81,6 +81,7 @@ If you run [Spoolman](https://github.com/Donkie/Spoolman) for filament tracking:
 | `/ams` | AMS slot status (filament type, colour, remaining weight) |
 | `/cam` | Live camera snapshot (requires Home Assistant camera entity) |
 | `/light` | Toggle printer light on/off (requires Home Assistant light entity) |
+| `/debug` | Show raw MQTT and state data for troubleshooting |
 | `/spools` | List all spools in your Spoolman inventory |
 | `/map <slot> <spool_id>` | Map AMS slot (1–4) to a Spoolman spool ID |
 | `/spoolman <spool_id> <slot>` | Same as `/map` — alternative argument order |
@@ -95,6 +96,11 @@ When running as a Home Assistant Add-on, the bot can fetch live snapshots from y
 1. Ensure the **Bambu Lab HA Integration** is active in your Home Assistant.
 2. The bot will try to auto-discover your camera entity (e.g., `camera.p1s_camera`).
 3. If it fails, you can manually set the entity ID in the Add-on configuration under `ha_camera_entity`.
+
+### ⚖️ Weight Fallback (HA Add-on only)
+If your printer's MQTT data is missing weight info (shows 0g), you can pull it from HA:
+1. In Home Assistant, find your printer's weight sensor (usually from the Bambu Lab integration).
+2. Enter its ID (e.g., `sensor.p1s_print_weight`) into `ha_weight_sensor` in the config.
 
 > **Note:** All commands are restricted to the configured `telegram_chat_id`. Messages from other users are silently ignored.
 
