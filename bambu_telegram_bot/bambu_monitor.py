@@ -65,6 +65,7 @@ LANGUAGE         = options.get("language", "he")
 SPOOLMAN_URL     = options.get("spoolman_url", "").strip().rstrip("/")
 HA_CAMERA_ENTITY = options.get("ha_camera_entity", "").strip()
 HA_LIGHT_ENTITY  = options.get("ha_light_entity", "").strip()
+HA_WEIGHT_SENSOR = options.get("ha_weight_sensor", "").strip()
 
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN")
 HA_API_BASE      = "http://supervisor/core/api"
@@ -312,6 +313,7 @@ _state = {
     "gcode_state": "",
     "print_weight": 0,
     "tray_now": 255,
+    "_raw_print": {},  # Internal: Last raw print object for debugging
 }
 _ams_state = {}
 _alerted_slots = set()
@@ -359,13 +361,28 @@ def send_status(message):
         light_state, _ = get_ha_light_state(HA_LIGHT_ENTITY)
         light_str = "\n" + (t("light_on") if light_state == "on" else t("light_off"))
 
+    # Try to fetch weight from HA sensor if configured and available
+    ha_weight = None
+    if HA_API_AVAILABLE and HA_WEIGHT_SENSOR:
+        try:
+            val, _ = get_ha_light_state(HA_WEIGHT_SENSOR) # Reusing helper for status fetch
+            if val and val not in ("unknown", "unavailable"):
+                ha_weight = int(float(val))
+                log.info(f"Fetched weight from HA sensor {HA_WEIGHT_SENSOR}: {ha_weight}g")
+        except Exception as e:
+            log.error(f"Failed to fetch weight from HA sensor: {e}")
+
     with _lock:
         if _state["printing"]:
             filename = _state["filename"] or "Unknown"
             pct      = _state["mc_percent"]
-            weight   = _state["print_weight"]
+            
+            # Prioritize HA weight sensor if it returned a valid number
+            weight   = ha_weight if ha_weight is not None else _state["print_weight"]
+            
+            weight_str = f"{weight}g" if weight is not None else "Unknown"
             eta      = _format_minutes(_state["mc_remaining_time"])
-            res = t("status_printing", filename=filename, pct=pct, weight=weight, eta=eta, light_status=light_str)
+            res = t("status_printing", filename=filename, pct=pct, weight=weight_str, eta=eta, light_status=light_str)
         else:
             res = t("status_idle", light_status=light_str)
     
@@ -603,6 +620,9 @@ def on_message(client, userdata, msg):
                 _state["tray_now"] = int(ams_block["tray_now"])
             except Exception:
                 pass
+
+        # Store raw print for debugging
+        _state["_raw_print"] = print_data
 
         # Process Print State & Weight Detection
         gcode_state     = print_data.get("gcode_state", _state["gcode_state"])
