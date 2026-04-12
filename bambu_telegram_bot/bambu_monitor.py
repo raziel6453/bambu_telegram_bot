@@ -313,7 +313,7 @@ _state = {
     "mc_remaining_time": 0,
     "last_milestone": 0,
     "gcode_state": "",
-    "print_weight": 0,
+    "print_weight": 0.0,
     "tray_now": 255,
     "_raw_print": {},  # Internal: Last raw print object for debugging
 }
@@ -369,7 +369,9 @@ def send_status(message):
         try:
             val, _ = get_ha_light_state(HA_WEIGHT_ENTITY) # Reusing helper for status fetch
             if val and val not in ("unknown", "unavailable"):
-                ha_weight = int(float(val))
+                # Clean any 'g' suffix and convert to float
+                cleaned_val = str(val).lower().replace('g', '').strip()
+                ha_weight = round(float(cleaned_val), 1)
                 log.info(f"Fetched weight from HA entity {HA_WEIGHT_ENTITY}: {ha_weight}g")
         except Exception as e:
             log.error(f"Failed to fetch weight from HA sensor: {e}")
@@ -380,10 +382,15 @@ def send_status(message):
             pct      = _state["mc_percent"]
             
             # Prioritize HA weight sensor if it returned a valid number
-            weight   = ha_weight if ha_weight is not None else _state["print_weight"]
+            weight = ha_weight if ha_weight is not None else _state["print_weight"]
             
-            weight_str = weight if weight is not None else "Unknown"
-            eta      = _format_minutes(_state["mc_remaining_time"])
+            # Use float formatting to ensure a decimal point (e.g. 0.0)
+            try:
+                weight_str = f"{float(weight):.1f}"
+            except:
+                weight_str = "Unknown"
+            
+            eta = _format_minutes(_state["mc_remaining_time"])
             res = t("status_printing", filename=filename, pct=pct, weight=weight_str, eta=eta, light_status=light_str)
         else:
             res = t("status_idle", light_status=light_str)
@@ -669,13 +676,26 @@ def on_message(client, userdata, msg):
         
         # 1. Direct grams fields
         w_grams = print_data.get("subtask_weight") or print_data.get("print_weight")
-        if w_grams and int(w_grams) > 0:
-            new_weight = int(w_grams)
-        else:
-            # 2. Milligrams fallbacks (common in some firmware/local prints)
+        if w_grams is not None:
+            try:
+                # Clean 'g' and convert to float
+                cleaned_w = str(w_grams).lower().replace('g', '').strip()
+                parsed_w = float(cleaned_w)
+                if parsed_w > 0:
+                    new_weight = round(parsed_w, 1)
+            except:
+                pass
+        
+        # Fallback to milligrams if still 0
+        if new_weight <= 0:
             w_mg = print_data.get("total_weight") or print_data.get("weight")
-            if w_mg and int(w_mg) > 0:
-                new_weight = int(int(w_mg) / 1000)
+            if w_mg is not None:
+                try:
+                    parsed_mg = float(str(w_mg).lower().replace('g','').strip())
+                    if parsed_mg > 0:
+                        new_weight = round(parsed_mg / 1000.0, 1)
+                except:
+                    pass
 
         weight_estimate = new_weight
 
