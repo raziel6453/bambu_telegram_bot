@@ -752,7 +752,8 @@ def on_message(client, userdata, msg):
                         log.error(f"Spoolman API subtraction failed due to exception: {e}")
 
             log.info(f"Print finished: {filename}")
-            send_telegram(t("print_done", filename=filename or "–", weight=weight_used, duration=dur))
+            weight_str = f"{float(weight_used):.1f}g"
+            send_telegram(t("print_done", filename=filename or "–", weight=weight_str, duration=dur))
 
         # Print failed / cancelled
         elif gcode_state in ("FAILED", "PAUSE") and was_printing and gcode_state == "FAILED":
