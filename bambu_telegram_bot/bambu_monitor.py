@@ -94,7 +94,16 @@ STRINGS = {
         "spoolman_not_enabled": "❌ Spoolman לא הוגדר בהגדרות Addon של Home Assistant.",
         "spools_title":   "📦 מאגר Spoolman:\n",
         "spools_item":    "ID: #{id} | {emoji} {brand} {material} | משקל נותר: {grams}g\n",
-        "spools_empty":   "המאגר ריק.\n"
+        "spools_empty":   "המאגר ריק.\n",
+        "help": (
+            "🖨️ *Bambu Telegram Monitor — פקודות זמינות:*\n\n"
+            "/status — סטטוס נוכחי של המדפסת\n"
+            "/ams — סטטוס מגשי ה-AMS\n"
+            "/spools — רשימת ספולים ב-Spoolman\n"
+            "/map <slot> <spool\\_id> — שיוך סלוט ל-Spoolman\n"
+            "/spoolman <spool\\_id> <slot> — שיוך (פורמט חלופי)\n"
+            "/help — הצגת תפריט זה"
+        )
     },
     "en": {
         "print_start":    "🖨️ Print started!\nFile: {filename}\nWeight: {weight}g\nETA: {eta}",
@@ -116,7 +125,16 @@ STRINGS = {
         "spoolman_not_enabled": "❌ Spoolman URL is not configured in Home Assistant Add-on options.",
         "spools_title":   "📦 Spoolman Inventory:\n",
         "spools_item":    "ID: #{id} | {emoji} {brand} {material} | Weight: {grams}g\n",
-        "spools_empty":   "Inventory is empty.\n"
+        "spools_empty":   "Inventory is empty.\n",
+        "help": (
+            "🖨️ *Bambu Telegram Monitor — Available Commands:*\n\n"
+            "/status — Current printer status\n"
+            "/ams — AMS slot status\n"
+            "/spools — List Spoolman inventory\n"
+            "/map <slot> <spool\\_id> — Map AMS slot to Spoolman spool\n"
+            "/spoolman <spool\\_id> <slot> — Map spool (alternative format)\n"
+            "/help — Show this menu"
+        )
     }
 }
 
@@ -298,6 +316,35 @@ def send_ams(message):
                     res += t("ams_slot", slot=i+1, emoji=emoji, type=typ, brand=brand, grams=grams)
 
     bot.reply_to(message, res)
+
+@bot.message_handler(commands=['help'])
+def send_help(message):
+    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
+    bot.reply_to(message, t("help"), parse_mode="Markdown")
+
+@bot.message_handler(commands=['map'])
+def handle_map(message):
+    """Alias for /spoolman with argument order: /map <slot> <spool_id>"""
+    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
+    if not SPOOLMAN_URL or SPOOLMAN_URL == "http://":
+        bot.reply_to(message, t("spoolman_not_enabled"))
+        return
+
+    parts = message.text.split()
+    if len(parts) >= 3:
+        try:
+            slot_input = int(parts[1])
+            spool_id   = int(parts[2])
+            if 1 <= slot_input <= 4:
+                slot_id_str = str(slot_input - 1)
+                mapping = load_spoolman_mapping()
+                mapping[slot_id_str] = spool_id
+                save_spoolman_mapping(mapping)
+                bot.reply_to(message, t("spoolman_success", sid=spool_id, slot=slot_input))
+                return
+        except ValueError:
+            pass
+    bot.reply_to(message, t("spoolman_fail"))
 
 # ── MQTT callbacks ────────────────────────────────────────
 def on_connect(client, userdata, flags, rc):
