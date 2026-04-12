@@ -4,7 +4,7 @@ Bambu Lab Telegram Monitor for Home Assistant Add-on
 Sends print start/finish notifications, progress updates, and Spoolman filament tracking.
 """
 
-import os, sys, time, json, threading, logging, requests, ssl, yaml
+import os, sys, time, json, threading, logging, requests, ssl, yaml, html
 from datetime import datetime
 
 try:
@@ -382,7 +382,7 @@ def send_status(message):
             # Prioritize HA weight sensor if it returned a valid number
             weight   = ha_weight if ha_weight is not None else _state["print_weight"]
             
-            weight_str = f"{weight}g" if weight is not None else "Unknown"
+            weight_str = weight if weight is not None else "Unknown"
             eta      = _format_minutes(_state["mc_remaining_time"])
             res = t("status_printing", filename=filename, pct=pct, weight=weight_str, eta=eta, light_status=light_str)
         else:
@@ -593,27 +593,34 @@ def handle_light(message):
 @bot.message_handler(commands=['debug'])
 def handle_debug(message):
     """Sends current state and last raw MQTT print object to Telegram."""
-    if str(message.chat.id) != str(TELEGRAM_CHAT_ID):
+    log.info(f"Debug command received from chat_id: {message.chat.id}")
+    if str(message.chat.id).strip() != str(TELEGRAM_CHAT_ID).strip():
+        log.warning(f"Unauthorized debug attempt from {message.chat.id}")
         return
     
-    with _lock:
-        state_copy = dict(_state)
-        # Separate the heavy raw_print object
-        raw_print = state_copy.pop("_raw_print", {})
-        
-        state_json = json.dumps(state_copy, indent=2, default=str)
-        raw_json = json.dumps(raw_print, indent=2, default=str)
-    
-    debug_msg = f"🔍 *Debug Info*\n\n*State:*\n```json\n{state_json}\n```\n\n*Last Raw MQTT:*\n```json\n{raw_json}\n```"
-    
-    if len(debug_msg) > 4000:
-        debug_msg = debug_msg[:4000] + "\n... (truncated)"
-    
     try:
-        bot.reply_to(message, debug_msg, parse_mode="Markdown")
+        with _lock:
+            state_copy = dict(_state)
+            # Separate the heavy raw_print object
+            raw_print = state_copy.pop("_raw_print", {})
+            
+            state_json = json.dumps(state_copy, indent=2, default=str)
+            raw_json = json.dumps(raw_print, indent=2, default=str)
+        
+        # Use HTML for better reliability with raw JSON characters
+        debug_msg = (
+            "<b>🔍 Debug Info</b>\n\n"
+            "<b>State:</b>\n<pre>" + html.escape(state_json) + "</pre>\n\n"
+            "<b>Last Raw MQTT:</b>\n<pre>" + html.escape(raw_json) + "</pre>"
+        )
+        
+        if len(debug_msg) > 4000:
+            debug_msg = debug_msg[:4000] + "\n... (truncated)"
+        
+        bot.reply_to(message, debug_msg, parse_mode="HTML")
     except Exception as e:
-        log.error(f"Debug reply failed: {e}")
-        bot.reply_to(message, "❌ Debug message too large or failed to send.")
+        log.error(f"Debug command failed: {e}")
+        bot.reply_to(message, f"❌ Debug failed: {e}")
 
 # ── MQTT callbacks ────────────────────────────────────────
 def on_connect(client, userdata, flags, rc):
