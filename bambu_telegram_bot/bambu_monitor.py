@@ -38,6 +38,9 @@ TELEGRAM_TOKEN   = options.get("telegram_token", "")
 TELEGRAM_CHAT_ID = options.get("telegram_chat_id", "")
 LANGUAGE         = options.get("language", "he")
 SPOOLMAN_URL     = options.get("spoolman_url", "").strip().rstrip("/")
+HA_CAMERA_ENTITY = options.get("ha_camera_entity", "").strip()
+SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN")
+HA_API_BASE      = "http://supervisor/core/api"
 
 if "YOUR_" in PRINTER_IP or not PRINTER_IP:
     sys.exit("❌ Please fill in the add-on configuration with your printer and Telegram details.")
@@ -99,11 +102,15 @@ STRINGS = {
             "🖨️ *Bambu Telegram Monitor — פקודות זמינות:*\n\n"
             "/status — סטטוס נוכחי של המדפסת\n"
             "/ams — סטטוס מגשי ה-AMS\n"
+            "/cam — צילום חי מהמדפסת (מצריך HA)\n"
             "/spools — רשימת ספולים ב-Spoolman\n"
             "/map <slot> <spool\\_id> — שיוך סלוט ל-Spoolman\n"
             "/spoolman <spool\\_id> <slot> — שיוך (פורמט חלופי)\n"
             "/help — הצגת תפריט זה"
-        )
+        ),
+        "cam_error":      "❌ שגיאה במשיכת תמונה מ-Home Assistant: {error}",
+        "cam_no_entity":  "❌ לא הוגדרה מצלמה ולא נמצאה מצלמת Bambu אוטומטית ב-Home Assistant.",
+        "ha_no_api":      "❌ הבוט לא רץ כ-Add-on עם הרשאות API של Home Assistant."
     },
     "en": {
         "print_start":    "🖨️ Print started!\nFile: {filename}\nWeight: {weight}g\nETA: {eta}",
@@ -130,11 +137,15 @@ STRINGS = {
             "🖨️ *Bambu Telegram Monitor — Available Commands:*\n\n"
             "/status — Current printer status\n"
             "/ams — AMS slot status\n"
+            "/cam — Live snapshot (requires HA)\n"
             "/spools — List Spoolman inventory\n"
             "/map <slot> <spool\\_id> — Map AMS slot to Spoolman spool\n"
             "/spoolman <spool\\_id> <slot> — Map spool (alternative format)\n"
             "/help — Show this menu"
-        )
+        ),
+        "cam_error":      "❌ Error fetching snapshot from Home Assistant: {error}",
+        "cam_no_entity":  "❌ No camera entity configured and no Bambu camera discovered autoamtically in Home Assistant.",
+        "ha_no_api":      "❌ Bot is not running as an Add-on with Home Assistant API access."
     }
 }
 
@@ -164,6 +175,40 @@ def send_telegram(text):
         bot.send_message(TELEGRAM_CHAT_ID, text)
     except Exception as e:
         log.error(f"Telegram send failed: {e}")
+
+def get_ha_snapshot(entity_id=None):
+    """Fetches a camera snapshot from Home Assistant via the Supervisor API."""
+    if not SUPERVISOR_TOKEN:
+        return None, t("ha_no_api")
+    
+    headers = {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
+    
+    if not entity_id:
+        # Try auto-discovery by looking for camera entities with 'bambu' in their ID
+        try:
+            r = requests.get(f"{HA_API_BASE}/states", headers=headers, timeout=10)
+            if r.status_code == 200:
+                states = r.json()
+                for state in states:
+                    eid = state.get("entity_id", "")
+                    if eid.startswith("camera.") and "bambu" in eid.lower():
+                        entity_id = eid
+                        log.info(f"Auto-discovered camera: {entity_id}")
+                        break
+        except Exception as e:
+            log.error(f"HA state discovery failed: {e}")
+            
+    if not entity_id:
+        return None, t("cam_no_entity")
+
+    try:
+        url = f"{HA_API_BASE}/camera_proxy/{entity_id}"
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code == 200:
+            return r.content, None
+        return None, t("cam_error", error=f"HTTP {r.status_code}")
+    except Exception as e:
+        return None, t("cam_error", error=str(e))
 
 # ── State ─────────────────────────────────────────────────
 _state = {
@@ -366,6 +411,28 @@ def handle_map(message):
         except ValueError:
             pass
     bot.reply_to(message, t("spoolman_fail"))
+
+@bot.message_handler(commands=['cam', 'snapshot'])
+def handle_cam(message):
+    """Fetches and sends a live camera snapshot from Home Assistant."""
+    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
+    
+    # Notify user we are working on it (chat action "upload_photo")
+    try:
+        bot.send_chat_action(message.chat.id, 'upload_photo')
+    except Exception:
+        pass
+    
+    img_bytes, error = get_ha_snapshot(HA_CAMERA_ENTITY)
+    if error:
+        bot.reply_to(message, error)
+        return
+        
+    try:
+        bot.send_photo(message.chat.id, img_bytes, caption=f"📸 {datetime.now().strftime('%H:%M:%S')}")
+    except Exception as e:
+        log.error(f"Failed to send photo: {e}")
+        bot.reply_to(message, f"❌ Failed to send photo: {e}")
 
 # ── MQTT callbacks ────────────────────────────────────────
 def on_connect(client, userdata, flags, rc):

@@ -1,5 +1,5 @@
 name: "Bambu Telegram Monitor"
-version: "1.0.0"
+version: "1.1.0"
 slug: "bambu_telegram_monitor"
 description: "Monitors Bambu Lab printers (A1/P1/X1) and sends notifications via Telegram."
 url: "https://github.com/raziel6453/bambu_telegram_bot"
@@ -8,6 +8,7 @@ arch:
   - amd64
   - armv7
 init: false
+homeassistant_api: true
 map:
   - config:rw
 options:
@@ -19,6 +20,7 @@ options:
   telegram_token: "YOUR_TELEGRAM_BOT_TOKEN"
   telegram_chat_id: "YOUR_CHAT_ID"
   language: "he"
+  ha_camera_entity: ""
 schema:
   printer_ip: str
   printer_serial: str
@@ -29,3 +31,4 @@ schema:
   telegram_chat_id: str
   language: "list(he|en)"
   spoolman_url: str?
+  ha_camera_entity: str?

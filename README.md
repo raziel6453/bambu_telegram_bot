@@ -9,6 +9,7 @@ A Telegram bot that monitors your **Bambu Lab 3D printer** (A1 / P1 / X1 series)
 - 📡 **Real-time MQTT monitoring** — connects directly to your printer (local network or Bambu Cloud fallback)
 - 📬 **Telegram notifications** — print start, progress milestones (25/50/75%), completion, failure, and low-filament alerts
 - 🔍 **Live status on demand** — `/status` actively polls the printer for an exact, real-time percentage
+- 📸 **Live snapshots** — `/cam` sends a real-time photo from your printer (requires HA camera entity)
 - 🧵 **Spoolman integration** — automatically deducts filament usage from tracked spools on print completion
 - 🗂️ **AMS slot mapping** — map AMS slots to Spoolman spool IDs via bot commands
 - 🌐 **Multi-language support** — Hebrew (`he`) and English (`en`)
@@ -91,10 +92,21 @@ If you run [Spoolman](https://github.com/Donkie/Spoolman) for filament tracking:
 |---------|-------------|
 | `/status` | Live printer status — polls the printer in real-time for exact percentage & ETA |
 | `/ams` | AMS slot status (filament type, colour, remaining weight) |
+| `/cam` | Live camera snapshot (requires Home Assistant camera entity) |
 | `/spools` | List all spools in your Spoolman inventory |
 | `/map <slot> <spool_id>` | Map AMS slot (1–4) to a Spoolman spool ID |
 | `/spoolman <spool_id> <slot>` | Same as `/map` — alternative argument order |
 | `/help` | Show all available commands |
+
+---
+
+## 📷 Camera Integration (HA Add-on only)
+
+When running as a Home Assistant Add-on, the bot can fetch live snapshots from your printer's camera if you have the **Bambu Lab HA Integration** installed.
+
+1. Ensure the **Bambu Lab HA Integration** is active in your Home Assistant.
+2. The bot will try to auto-discover your camera entity (e.g., `camera.p1s_camera`).
+3. If it fails, you can manually set the entity ID in the Add-on configuration under `ha_camera_entity`.
 
 > **Note:** All commands are restricted to the configured `telegram_chat_id`. Messages from other users are silently ignored.
 
