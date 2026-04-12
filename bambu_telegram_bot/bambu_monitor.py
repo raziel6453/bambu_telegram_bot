@@ -590,6 +590,31 @@ def handle_light(message):
         msg = t("light_on") if new_state == "on" else t("light_off")
         bot.reply_to(message, msg)
 
+@bot.message_handler(commands=['debug'])
+def handle_debug(message):
+    """Sends current state and last raw MQTT print object to Telegram."""
+    if str(message.chat.id) != str(TELEGRAM_CHAT_ID):
+        return
+    
+    with _lock:
+        state_copy = dict(_state)
+        # Separate the heavy raw_print object
+        raw_print = state_copy.pop("_raw_print", {})
+        
+        state_json = json.dumps(state_copy, indent=2, default=str)
+        raw_json = json.dumps(raw_print, indent=2, default=str)
+    
+    debug_msg = f"🔍 *Debug Info*\n\n*State:*\n```json\n{state_json}\n```\n\n*Last Raw MQTT:*\n```json\n{raw_json}\n```"
+    
+    if len(debug_msg) > 4000:
+        debug_msg = debug_msg[:4000] + "\n... (truncated)"
+    
+    try:
+        bot.reply_to(message, debug_msg, parse_mode="Markdown")
+    except Exception as e:
+        log.error(f"Debug reply failed: {e}")
+        bot.reply_to(message, "❌ Debug message too large or failed to send.")
+
 # ── MQTT callbacks ────────────────────────────────────────
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
