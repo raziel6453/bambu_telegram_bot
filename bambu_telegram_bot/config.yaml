@@ -19,8 +19,8 @@ options:
   bambu_password: "YOUR_BAMBU_ACCOUNT_PASS"
   telegram_token: "YOUR_TELEGRAM_BOT_TOKEN"
   telegram_chat_id: "YOUR_CHAT_ID"
-  language: "he"
   ha_camera_entity: ""
+  language: "he"
 schema:
   printer_ip: str
   printer_serial: str
@@ -29,6 +29,6 @@ schema:
   bambu_password: password
   telegram_token: str
   telegram_chat_id: str
-  language: "list(he|en)"
   spoolman_url: str?
   ha_camera_entity: str?
+  language: "list(he|en)"
