@@ -91,7 +91,10 @@ STRINGS = {
         "ams_empty":      "סלוט {slot}: ❌ ריק\n",
         "spoolman_success": "✅ מאגר Spoolman ID {sid} שויך לסלוט {slot} בהצלחה. החסרה אוטומטית הופעלה.",
         "spoolman_fail": "❌ שגיאה: יש להקליד במבנה: /spoolman <מזהה_ספול> <סלוט_1-4>",
-        "spoolman_not_enabled": "❌ Spoolman לא הוגדר בהגדרות Addon של Home Assistant."
+        "spoolman_not_enabled": "❌ Spoolman לא הוגדר בהגדרות Addon של Home Assistant.",
+        "spools_title":   "📦 מאגר Spoolman:\n",
+        "spools_item":    "ID: #{id} | {emoji} {brand} {material} | משקל נותר: {grams}g\n",
+        "spools_empty":   "המאגר ריק.\n"
     },
     "en": {
         "print_start":    "🖨️ Print started!\nFile: {filename}\nWeight: {weight}g\nETA: {eta}",
@@ -110,7 +113,10 @@ STRINGS = {
         "ams_empty":      "Slot {slot}: ❌ Empty\n",
         "spoolman_success": "✅ Spoolman ID {sid} mapped to Slot {slot}. Auto-subtraction enabled.",
         "spoolman_fail": "❌ Error: Use format: /spoolman <spool_id> <slot_1-4>",
-        "spoolman_not_enabled": "❌ Spoolman URL is not configured in Home Assistant Add-on options."
+        "spoolman_not_enabled": "❌ Spoolman URL is not configured in Home Assistant Add-on options.",
+        "spools_title":   "📦 Spoolman Inventory:\n",
+        "spools_item":    "ID: #{id} | {emoji} {brand} {material} | Weight: {grams}g\n",
+        "spools_empty":   "Inventory is empty.\n"
     }
 }
 
@@ -182,6 +188,44 @@ def send_status(message):
         else:
             res = t("status_idle")
     bot.reply_to(message, res)
+
+@bot.message_handler(commands=['spools', 'inventory'])
+def send_spools(message):
+    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
+    if not SPOOLMAN_URL or SPOOLMAN_URL == "http://":
+        bot.reply_to(message, t("spoolman_not_enabled"))
+        return
+        
+    try:
+        r = requests.get(f"{SPOOLMAN_URL}/api/v1/spool", timeout=10)
+        if r.status_code == 200:
+            spools = r.json()
+            if not spools:
+                bot.reply_to(message, t("spools_title") + t("spools_empty"))
+                return
+                
+            res = t("spools_title")
+            for spool in spools:
+                weight = round(spool.get("remaining_weight", 0))
+                if weight <= 0: continue
+                
+                spool_id = spool.get("id")
+                filament = spool.get("filament", {})
+                hexcolor = filament.get("color_hex", "")
+                emoji = color_to_emoji(hexcolor)
+                brand = filament.get("vendor", {}).get("name", "Unknown")
+                mat = filament.get("material", "Unknown")
+                
+                res += t("spools_item", id=spool_id, emoji=emoji, brand=brand, material=mat, grams=weight)
+            
+            if len(res) > 4000:
+                res = res[:4000] + "\n... (too long)"
+            bot.reply_to(message, res)
+        else:
+            bot.reply_to(message, f"❌ Spoolman Error: {r.status_code}")
+    except Exception as e:
+        log.error(f"Failed to fetch spools: {e}")
+        bot.reply_to(message, f"❌ Spoolman Connection Error")
 
 @bot.message_handler(commands=['spoolman'])
 def handle_spoolman(message):
