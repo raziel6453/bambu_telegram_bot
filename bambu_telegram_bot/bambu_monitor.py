@@ -56,28 +56,28 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 # ── Messages ──────────────────────────────────────────────
 STRINGS = {
     "he": {
-        "print_start":    "🖨️ ההדפסה התחילה!\nקובץ: {filename}\nמשך משוער: {eta}",
-        "print_done":     "✅ ההדפסה הסתיימה!\nקובץ: {filename}\nסה\"כ זמן: {duration}",
+        "print_start":    "🖨️ ההדפסה התחילה!\nקובץ: {filename}\nמשקל: {weight}g\nמשך משוער: {eta}",
+        "print_done":     "✅ ההדפסה הסתיימה!\nקובץ: {filename}\nמשקל: {weight}g\nסה\"כ זמן: {duration}",
         "print_failed":   "❌ ההדפסה נכשלה.\nקובץ: {filename}",
         "progress":       "📊 התקדמות: {pct}%\nנותר: {remaining}",
         "low_filament":   "⚠️ נגמר חוט! סלוט {slot} נותר בערך: {grams}g",
         "connected":      "✅ הבוט מחובר ועובד!",
         "disconnected":   "🔴 הפסקתי עבודה.",
-        "status_printing": "🖨️ מדפיס כעת...\nקובץ: {filename}\nהתקדמות: {pct}%\nזמן נותר: {eta}",
+        "status_printing": "🖨️ מדפיס כעת...\nקובץ: {filename}\nמשקל: {weight}g\nהתקדמות: {pct}%\nזמן נותר: {eta}",
         "status_idle":    "💤 המדפסת כרגע במצב המתנה.",
         "ams_title":      "📦 סטטוס מערכת ה-AMS:\n",
         "ams_slot":       "סלוט {slot}: {emoji} סוג: {type} ({brand}) - נותר: {grams}g\n",
         "ams_empty":      "סלוט {slot}: ❌ ריק\n",
     },
     "en": {
-        "print_start":    "🖨️ Print started!\nFile: {filename}\nETA: {eta}",
-        "print_done":     "✅ Print finished!\nFile: {filename}\nTotal time: {duration}",
+        "print_start":    "🖨️ Print started!\nFile: {filename}\nWeight: {weight}g\nETA: {eta}",
+        "print_done":     "✅ Print finished!\nFile: {filename}\nWeight: {weight}g\nTotal time: {duration}",
         "print_failed":   "❌ Print failed.\nFile: {filename}",
         "progress":       "📊 Progress: {pct}%\nRemaining: {remaining}",
         "low_filament":   "⚠️ Low filament! Slot {slot}: ~{grams}g left",
         "connected":      "✅ Bot connected and running!",
         "disconnected":   "🔴 Bot stopped.",
-        "status_printing": "🖨️ Currently Printing...\nFile: {filename}\nProgress: {pct}%\nETA: {eta}",
+        "status_printing": "🖨️ Currently Printing...\nFile: {filename}\nWeight: {weight}g\nProgress: {pct}%\nETA: {eta}",
         "status_idle":    "💤 Printer is currently idle.",
         "ams_title":      "📦 AMS Status:\n",
         "ams_slot":       "Slot {slot}: {emoji} Type: {type} ({brand}) - Remaining: {grams}g\n",
@@ -120,6 +120,7 @@ _state = {
     "mc_remaining_time": 0,
     "last_milestone": 0,
     "gcode_state": "",
+    "print_weight": 0,
 }
 _ams_state = {}
 _alerted_slots = set()
@@ -146,8 +147,9 @@ def send_status(message):
         if _state["printing"]:
             filename = _state["filename"] or "Unknown"
             pct = _state["mc_percent"]
+            weight = _state["print_weight"]
             eta = _format_minutes(_state["mc_remaining_time"])
-            res = t("status_printing", filename=filename, pct=pct, eta=eta)
+            res = t("status_printing", filename=filename, pct=pct, weight=weight, eta=eta)
         else:
             res = t("status_idle")
             
@@ -205,6 +207,7 @@ def on_message(client, userdata, msg):
         mc_percent   = print_data.get("mc_percent", _state["mc_percent"])
         mc_remaining = print_data.get("mc_remaining_time", _state["mc_remaining_time"])
         filename     = print_data.get("subtask_name", _state["filename"]) or _state["filename"]
+        weight_estimate = print_data.get("print_weight", print_data.get("subtask_weight", _state["print_weight"]))
 
         prev_state  = _state["gcode_state"]
         was_printing = _state["printing"]
@@ -212,6 +215,7 @@ def on_message(client, userdata, msg):
         _state["gcode_state"]        = gcode_state
         _state["mc_percent"]         = mc_percent
         _state["mc_remaining_time"]  = mc_remaining
+        _state["print_weight"]       = weight_estimate
         if filename:
             _state["filename"] = filename
 
@@ -222,7 +226,7 @@ def on_message(client, userdata, msg):
             _state["last_milestone"] = 0
             eta = _format_minutes(mc_remaining)
             log.info(f"Print started: {filename}")
-            send_telegram(t("print_start", filename=filename or "–", eta=eta))
+            send_telegram(t("print_start", filename=filename or "–", weight=_state["print_weight"], eta=eta))
 
         # Print finished
         elif gcode_state == "FINISH" and was_printing:
@@ -231,7 +235,7 @@ def on_message(client, userdata, msg):
             if _state["start_time"]:
                 dur = _format_duration((datetime.now() - _state["start_time"]).total_seconds())
             log.info(f"Print finished: {filename}")
-            send_telegram(t("print_done", filename=filename or "–", duration=dur))
+            send_telegram(t("print_done", filename=filename or "–", weight=_state["print_weight"], duration=dur))
 
         # Print failed / cancelled
         elif gcode_state in ("FAILED", "PAUSE") and was_printing and gcode_state == "FAILED":
