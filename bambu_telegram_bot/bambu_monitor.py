@@ -180,6 +180,8 @@ _state = {
 _ams_state = {}
 _alerted_slots = set()
 _lock = threading.Lock()
+_mqtt_client = None          # set in main() after connection
+_status_refresh = threading.Event()  # signals that fresh data arrived
 
 def _format_minutes(mins):
     if mins <= 0:
@@ -191,17 +193,36 @@ def _format_duration(seconds):
     h, rem = divmod(int(seconds), 3600)
     m = rem // 60
     return f"{h}h {m}m" if h else f"{m}m"
-    
+
+def request_pushall():
+    """Ask the printer to push its full current state over MQTT."""
+    global _mqtt_client
+    if _mqtt_client is None:
+        return
+    topic   = f"device/{PRINTER_SERIAL}/request"
+    payload = json.dumps({"pushing": {"sequence_id": "0", "command": "pushall"}})
+    try:
+        _mqtt_client.publish(topic, payload)
+        log.info("Sent pushall request to printer")
+    except Exception as e:
+        log.error(f"pushall publish failed: {e}")
+
 # ── Interactive Bot Commands ──────────────────────────────
 @bot.message_handler(commands=['status'])
 def send_status(message):
     if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
+
+    # Request a live snapshot from the printer and wait up to 3 s for the reply
+    _status_refresh.clear()
+    request_pushall()
+    _status_refresh.wait(timeout=3)
+
     with _lock:
         if _state["printing"]:
             filename = _state["filename"] or "Unknown"
-            pct = _state["mc_percent"]
-            weight = _state["print_weight"]
-            eta = _format_minutes(_state["mc_remaining_time"])
+            pct      = _state["mc_percent"]
+            weight   = _state["print_weight"]
+            eta      = _format_minutes(_state["mc_remaining_time"])
             res = t("status_printing", filename=filename, pct=pct, weight=weight, eta=eta)
         else:
             res = t("status_idle")
@@ -368,6 +389,9 @@ def on_message(client, userdata, msg):
         return
 
     with _lock:
+        # Signal any waiting /status command that fresh data has arrived
+        _status_refresh.set()
+
         # Update AMS Active Tray tracker
         ams_block = print_data.get("ams", {})
         if "tray_now" in ams_block:
@@ -537,6 +561,7 @@ def main():
     t_bot.start()
 
     # Try local first, fall back to cloud
+    global _mqtt_client
     client = None
     try:
         sock = socket.create_connection((PRINTER_IP, 8883), timeout=5)
@@ -546,6 +571,7 @@ def main():
     except Exception:
         log.info("Local MQTT not reachable – trying Cloud MQTT...")
         client = connect_cloud_mqtt()
+    _mqtt_client = client
 
     if not client:
         sys.exit("Could not connect to printer via local or cloud MQTT.")
