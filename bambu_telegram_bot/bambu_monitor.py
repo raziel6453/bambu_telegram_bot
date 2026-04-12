@@ -271,6 +271,17 @@ def send_status(message):
             res = t("status_printing", filename=filename, pct=pct, weight=weight, eta=eta)
         else:
             res = t("status_idle")
+    
+    # Try to add a snapshot if camera is available
+    img_bytes, error = get_ha_snapshot(HA_CAMERA_ENTITY)
+    if img_bytes:
+        try:
+            bot.send_photo(message.chat.id, img_bytes, caption=res)
+            return
+        except Exception as e:
+            log.error(f"Failed to send status photo: {e}")
+            
+    # Fallback to text if snapshot fails or is not enabled or no HA token
     bot.reply_to(message, res)
 
 @bot.message_handler(commands=['spools', 'inventory'])

@@ -90,7 +90,7 @@ If you run [Spoolman](https://github.com/Donkie/Spoolman) for filament tracking:
 
 | Command | Description |
 |---------|-------------|
-| `/status` | Live printer status — polls the printer in real-time for exact percentage & ETA |
+| `/status` | Live printer status — polls the printer in real-time for exact percentage, ETA, and a live photo |
 | `/ams` | AMS slot status (filament type, colour, remaining weight) |
 | `/cam` | Live camera snapshot (requires Home Assistant camera entity) |
 | `/spools` | List all spools in your Spoolman inventory |
