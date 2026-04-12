@@ -6,8 +6,9 @@ A Telegram bot that monitors your **Bambu Lab 3D printer** (A1 / P1 / X1 series)
 
 ## ✨ Features
 
-- 📡 **Real-time MQTT monitoring** — connects directly to your printer over your local network
-- 📬 **Telegram notifications** — print start, layer progress, completion, and error alerts
+- 📡 **Real-time MQTT monitoring** — connects directly to your printer (local network or Bambu Cloud fallback)
+- 📬 **Telegram notifications** — print start, progress milestones (25/50/75%), completion, failure, and low-filament alerts
+- 🔍 **Live status on demand** — `/status` actively polls the printer for an exact, real-time percentage
 - 🧵 **Spoolman integration** — automatically deducts filament usage from tracked spools on print completion
 - 🗂️ **AMS slot mapping** — map AMS slots to Spoolman spool IDs via bot commands
 - 🌐 **Multi-language support** — Hebrew (`he`) and English (`en`)
@@ -88,10 +89,14 @@ If you run [Spoolman](https://github.com/Donkie/Spoolman) for filament tracking:
 
 | Command | Description |
 |---------|-------------|
-| `/status` | Current printer status |
-| `/map <slot> <spool_id>` | Map AMS slot to Spoolman spool |
-| `/spools` | List current AMS → Spoolman mappings |
+| `/status` | Live printer status — polls the printer in real-time for exact percentage & ETA |
+| `/ams` | AMS slot status (filament type, colour, remaining weight) |
+| `/spools` | List all spools in your Spoolman inventory |
+| `/map <slot> <spool_id>` | Map AMS slot (1–4) to a Spoolman spool ID |
+| `/spoolman <spool_id> <slot>` | Same as `/map` — alternative argument order |
 | `/help` | Show all available commands |
+
+> **Note:** All commands are restricted to the configured `telegram_chat_id`. Messages from other users are silently ignored.
 
 ---
 
