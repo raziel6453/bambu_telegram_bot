@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Bambu Lab Telegram Monitor for Home Assistant Add-on
-Sends print start/finish notifications, progress updates, and filament tracking.
+Sends print start/finish notifications, progress updates, and Spoolman filament tracking.
 """
 
 import os, sys, time, json, threading, logging, requests, ssl
@@ -19,7 +19,7 @@ except ImportError:
 
 # ── Load config from HA Add-on options.json ───────────────
 OPTIONS_PATH = "/data/options.json"
-CUSTOM_SPOOLS_FILE = "/data/custom_spools.json"
+SPOOLMAN_MAPPING_FILE = "/data/spoolman_mapping.json"
 options = {}
 
 if os.path.exists(OPTIONS_PATH):
@@ -37,6 +37,7 @@ BAMBU_PASSWORD   = options.get("bambu_password", "")
 TELEGRAM_TOKEN   = options.get("telegram_token", "")
 TELEGRAM_CHAT_ID = options.get("telegram_chat_id", "")
 LANGUAGE         = options.get("language", "he")
+SPOOLMAN_URL     = options.get("spoolman_url", "").strip().rstrip("/")
 
 if "YOUR_" in PRINTER_IP or not PRINTER_IP:
     sys.exit("❌ Please fill in the add-on configuration with your printer and Telegram details.")
@@ -51,22 +52,22 @@ logging.basicConfig(
 )
 log = logging.getLogger("bambu")
 
-# ── Custom Spools Store ───────────────────────────────────
-def load_custom_spools():
-    if os.path.exists(CUSTOM_SPOOLS_FILE):
+# ── Spoolman Slot Mappings ────────────────────────────────
+def load_spoolman_mapping():
+    if os.path.exists(SPOOLMAN_MAPPING_FILE):
         try:
-            with open(CUSTOM_SPOOLS_FILE, 'r') as f:
+            with open(SPOOLMAN_MAPPING_FILE, 'r') as f:
                 return json.load(f)
         except Exception:
             return {}
     return {}
 
-def save_custom_spools(data):
+def save_spoolman_mapping(data):
     try:
-        with open(CUSTOM_SPOOLS_FILE, 'w') as f:
+        with open(SPOOLMAN_MAPPING_FILE, 'w') as f:
             json.dump(data, f)
     except Exception as e:
-        log.error(f"Failed to save custom spools: {e}")
+        log.error(f"Failed to save spoolman mapping: {e}")
 
 # ── Telegram Bot Init ─────────────────────────────────────
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
@@ -85,10 +86,12 @@ STRINGS = {
         "status_idle":    "💤 המדפסת כרגע במצב המתנה.",
         "ams_title":      "📦 סטטוס מערכת ה-AMS:\n",
         "ams_slot":       "סלוט {slot}: {emoji} סוג: {type} ({brand}) - נותר משוער: {grams}g\n",
-        "ams_custom_slot":"סלוט {slot}: {emoji} סוג: {type} ({brand}) - נותר: {grams}g (מוזן ידנית)\n",
+        "ams_spoolman_slot": "סלוט {slot}: {emoji} סוג: {brand} {material} - נותר: {grams}g (Spoolman)\n",
+        "ams_spoolman_fail": "סלוט {slot}: ❌ שגיאת חיבור ל-Spoolman (ID {sid})\n",
         "ams_empty":      "סלוט {slot}: ❌ ריק\n",
-        "setslot_success": "✅ סלוט {slot} עודכן ל-{grams} גרם. הבוט יחסיר ממשקל זה באופן אוטומטי בהדפסות הבאות.",
-        "setslot_fail":    "❌ שגיאה: יש להקליד במבנה: /setslot <מספר 1-4> <גרמים>",
+        "spoolman_success": "✅ מאגר Spoolman ID {sid} שויך לסלוט {slot} בהצלחה. החסרה אוטומטית הופעלה.",
+        "spoolman_fail": "❌ שגיאה: יש להקליד במבנה: /spoolman <מזהה_ספול> <סלוט_1-4>",
+        "spoolman_not_enabled": "❌ Spoolman לא הוגדר בהגדרות Addon של Home Assistant."
     },
     "en": {
         "print_start":    "🖨️ Print started!\nFile: {filename}\nWeight: {weight}g\nETA: {eta}",
@@ -102,10 +105,12 @@ STRINGS = {
         "status_idle":    "💤 Printer is currently idle.",
         "ams_title":      "📦 AMS Status:\n",
         "ams_slot":       "Slot {slot}: {emoji} Type: {type} ({brand}) - Estimated: {grams}g\n",
-        "ams_custom_slot":"Slot {slot}: {emoji} Type: {type} ({brand}) - Remaining: {grams}g (Manual Tracker)\n",
+        "ams_spoolman_slot": "Slot {slot}: {emoji} Type: {brand} {material} - Remaining: {grams}g (Spoolman)\n",
+        "ams_spoolman_fail": "Slot {slot}: ❌ Spoolman Connection Error (ID {sid})\n",
         "ams_empty":      "Slot {slot}: ❌ Empty\n",
-        "setslot_success": "✅ Slot {slot} updated to {grams} grams. It will auto-subtract after successful prints.",
-        "setslot_fail":    "❌ Error: Use format: /setslot <1-4> <grams>",
+        "spoolman_success": "✅ Spoolman ID {sid} mapped to Slot {slot}. Auto-subtraction enabled.",
+        "spoolman_fail": "❌ Error: Use format: /spoolman <spool_id> <slot_1-4>",
+        "spoolman_not_enabled": "❌ Spoolman URL is not configured in Home Assistant Add-on options."
     }
 }
 
@@ -115,6 +120,7 @@ def t(key, **kwargs):
 
 def color_to_emoji(hexcode):
     if not hexcode or len(hexcode) < 6: return "🧵"
+    hexcode = hexcode.replace("#", "")
     try:
         r, g, b = int(hexcode[0:2], 16), int(hexcode[2:4], 16), int(hexcode[4:6], 16)
         if r > 200 and g > 200 and b > 200: return "⚪"
@@ -177,24 +183,28 @@ def send_status(message):
             res = t("status_idle")
     bot.reply_to(message, res)
 
-@bot.message_handler(commands=['setslot'])
-def handle_setslot(message):
+@bot.message_handler(commands=['spoolman'])
+def handle_spoolman(message):
     if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
+    if not SPOOLMAN_URL or SPOOLMAN_URL == "http://":
+        bot.reply_to(message, t("spoolman_not_enabled"))
+        return
+        
     parts = message.text.split()
     if len(parts) >= 3:
         try:
-            slot_input = int(parts[1])
+            spool_id = int(parts[1])
+            slot_input = int(parts[2])
             if 1 <= slot_input <= 4:
-                slot_id = str(slot_input - 1)
-                grams = int(parts[2])
-                spools = load_custom_spools()
-                spools[slot_id] = grams
-                save_custom_spools(spools)
-                bot.reply_to(message, t("setslot_success", slot=slot_input, grams=grams))
+                slot_id_str = str(slot_input - 1)
+                mapping = load_spoolman_mapping()
+                mapping[slot_id_str] = spool_id
+                save_spoolman_mapping(mapping)
+                bot.reply_to(message, t("spoolman_success", sid=spool_id, slot=slot_input))
                 return
         except ValueError:
             pass
-    bot.reply_to(message, t("setslot_fail"))
+    bot.reply_to(message, t("spoolman_fail"))
 
 @bot.message_handler(commands=['ams'])
 def send_ams(message):
@@ -204,25 +214,43 @@ def send_ams(message):
             bot.reply_to(message, "Waiting for AMS data from printer...")
             return
 
-        custom_spools = load_custom_spools()
+        mapping = load_spoolman_mapping()
         res = t("ams_title")
+        
         for i in range(4):
-            slot_data = _ams_state.get(str(i))
-            # If no data is seen from printer, it's typically empty
-            if not slot_data or slot_data.get("type") in ("Unknown", "") or slot_data.get("remain") < 0:
-                # If they saved manual grams for an empty slot we can still display it, but usually empty means pulled.
-                res += t("ams_empty", slot=i+1)
+            slot_str = str(i)
+            slot_data = _ams_state.get(slot_str)
+            
+            # If Spoolman is mapped to this slot, query it
+            if slot_str in mapping and SPOOLMAN_URL and SPOOLMAN_URL != "http://":
+                spool_id = mapping[slot_str]
+                try:
+                    r = requests.get(f"{SPOOLMAN_URL}/api/v1/spool/{spool_id}", timeout=5)
+                    if r.status_code == 200:
+                        spool = r.json()
+                        rem_w = round(spool.get("remaining_weight", 0))
+                        
+                        filament = spool.get("filament", {})
+                        hexcolor = filament.get("color_hex", "")
+                        emoji = color_to_emoji(hexcolor)
+                        brand = filament.get("vendor", {}).get("name", "Unknown")
+                        mat = filament.get("material", "Unknown")
+                        
+                        res += t("ams_spoolman_slot", slot=i+1, emoji=emoji, brand=brand, material=mat, grams=rem_w)
+                    else:
+                        res += t("ams_spoolman_fail", slot=i+1, sid=spool_id)
+                except Exception:
+                    res += t("ams_spoolman_fail", slot=i+1, sid=spool_id)
+            
+            # If no Spoolman, fallback to basic Bambu native reporting
             else:
-                emoji = color_to_emoji(slot_data.get("color"))
-                typ = slot_data.get("type", "")
-                brand = slot_data.get("brand", "")
-                
-                if str(i) in custom_spools:
-                    grams = custom_spools[str(i)]
-                    res += t("ams_custom_slot", slot=i+1, emoji=emoji, type=typ, brand=brand, grams=grams)
+                if not slot_data or slot_data.get("type") in ("Unknown", "") or slot_data.get("remain", -1) < 0:
+                    res += t("ams_empty", slot=i+1)
                 else:
-                    remain_pct = slot_data.get("remain", 0)
-                    grams = remain_pct * 10
+                    emoji = color_to_emoji(slot_data.get("color"))
+                    typ = slot_data.get("type", "")
+                    brand = slot_data.get("brand", "")
+                    grams = slot_data.get("remain", 0) * 10
                     res += t("ams_slot", slot=i+1, emoji=emoji, type=typ, brand=brand, grams=grams)
 
     bot.reply_to(message, res)
@@ -293,15 +321,24 @@ def on_message(client, userdata, msg):
             weight_used = _state.get("print_weight", 0)
             tray = _state.get("tray_now", 255)
             
-            # Custom deduction
+            # Spoolman auto-deduction
             if weight_used > 0 and tray != 255:
-                spools = load_custom_spools()
+                mapping = load_spoolman_mapping()
                 str_tray = str(tray)
-                if str_tray in spools:
-                    new_w = max(0, spools[str_tray] - weight_used)
-                    spools[str_tray] = new_w
-                    save_custom_spools(spools)
-                    log.info(f"Subtracted {weight_used}g from custom Slot {tray+1}. Remaining: {new_w}g")
+                if SPOOLMAN_URL and SPOOLMAN_URL != "http://" and str_tray in mapping:
+                    spool_id = mapping[str_tray]
+                    try:
+                        r = requests.put(
+                            f"{SPOOLMAN_URL}/api/v1/spool/{spool_id}/use",
+                            json={"use_weight": weight_used},
+                            timeout=10
+                        )
+                        if r.status_code == 200:
+                            log.info(f"Subtracted {weight_used}g from Spoolman ID {spool_id} successfully.")
+                        else:
+                            log.error(f"Failed to subtract from Spoolman API: {r.status_code} {r.text}")
+                    except Exception as e:
+                        log.error(f"Spoolman API subtraction failed due to exception: {e}")
 
             log.info(f"Print finished: {filename}")
             send_telegram(t("print_done", filename=filename or "–", weight=weight_used, duration=dur))
@@ -335,22 +372,20 @@ def on_message(client, userdata, msg):
                     "remain": remain_pct
                 }
 
-                # Alerts based on threshold
-                # If custom spool falls below 100g, or if normal spool drops below 10%
-                check_grams = 9999
-                spools = load_custom_spools()
-                if str(slot_id) in spools:
-                    check_grams = spools[str(slot_id)]
-                elif 0 <= remain_pct <= 100:
-                    check_grams = remain_pct * 10
-                
-                if check_grams < 100:
-                    if slot_id not in _alerted_slots:
-                        send_telegram(t("low_filament", slot=int(slot_id)+1, grams=check_grams))
-                        _alerted_slots.add(slot_id)
-                else:
-                    if slot_id in _alerted_slots:
-                        _alerted_slots.remove(slot_id)
+                # Low Filament alert (only for native 10% Bambu spools for speed)
+                mapping = load_spoolman_mapping()
+                if str(slot_id) not in mapping:
+                    check_grams = 9999
+                    if 0 <= remain_pct <= 100:
+                        check_grams = remain_pct * 10
+                    
+                    if check_grams < 100:
+                        if slot_id not in _alerted_slots:
+                            send_telegram(t("low_filament", slot=int(slot_id)+1, grams=check_grams))
+                            _alerted_slots.add(slot_id)
+                    else:
+                        if slot_id in _alerted_slots:
+                            _alerted_slots.remove(slot_id)
 
 # ── Bambu Cloud MQTT ─────────────────────────────────────────
 def get_bambu_token():

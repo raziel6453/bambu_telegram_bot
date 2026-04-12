@@ -28,3 +28,4 @@ schema:
   telegram_token: str
   telegram_chat_id: str
   language: "list(he|en)"
+  spoolman_url: str?
