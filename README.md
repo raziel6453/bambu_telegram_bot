@@ -18,48 +18,42 @@ A Telegram bot that monitors your **Bambu Lab 3D printer** (A1 / P1 / X1 series)
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Installation & Setup
 
-### 1. Clone the repository
+### 🏠 Home Assistant Add-on (Recommended)
+This is the easiest way to run the bot. It will automatically integrate with Home Assistant and simplified configuration.
 
-```bash
-git clone https://github.com/raziel6453/bambu_telegram_bot.git
-cd bambu_telegram_bot
-```
-
-### 2. Configure Settings
-The bot supports two ways to load settings in standalone mode:
-
-#### Option A: Edit `config.yaml` (Recommended)
-Edit the `options:` section in `bambu_telegram_bot/config.yaml`:
-- Set your printer details and Telegram tokens.
-
-#### Option B: Use `options.json`
-Create a file named `options.json` in the project root with your settings.
-
-### 3. Run with Docker (Standalone)
-```bash
-docker build -t bambu-monitor ./bambu_telegram_bot
-docker run -d --name bambu-monitor -v $(pwd)/config.yaml:/app/config.yaml bambu-monitor
-```
-
-### 4. Run directly (Python)
-```bash
-cd bambu_telegram_bot
-pip install -r requirements.txt
-python bambu_monitor.py
-```
+1. Go to **Settings → Add-ons → Add-on Store**.
+2. Click the ⋮ menu (top right) → **Repositories**.
+3. Add this URL: `https://github.com/raziel6453/bambu_telegram_bot`
+4. Find **Bambu Telegram Monitor** in the list and click **Install**.
+5. Go to the **Configuration** tab, enter your details, and click **Start**.
 
 ---
 
-## 🏠 Home Assistant Add-on
+### 💻 Standalone Installation (Expert)
+If you're not using Home Assistant OS, you can run the bot as a standalone service.
 
-This bot is designed as a **Home Assistant add-on**. To install it locally:
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/raziel6453/bambu_telegram_bot.git
+   cd bambu_telegram_bot
+   ```
 
-1. Go to **Settings → Add-ons → Add-on Store**
-2. Click the ⋮ menu → **Repositories** → add this repo URL
-3. Find **Bambu Telegram Monitor** and install it
-4. Configure via the add-on's UI and start
+2. **Configure Settings**:
+   Edit the `options:` section in `bambu_telegram_bot/config.yaml` OR create an `options.json` in the root.
+
+3. **Run with Docker**:
+   ```bash
+   docker build -t bambu-monitor ./bambu_telegram_bot
+   docker run -d --name bambu-monitor -v $(pwd)/config.yaml:/app/config.yaml bambu-monitor
+   ```
+
+4. **Run with Python**:
+   ```bash
+   pip install -r requirements.txt
+   python bambu_monitor.py
+   ```
 
 ---
 
