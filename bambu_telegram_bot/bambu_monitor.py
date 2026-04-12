@@ -39,6 +39,7 @@ TELEGRAM_CHAT_ID = options.get("telegram_chat_id", "")
 LANGUAGE         = options.get("language", "he")
 SPOOLMAN_URL     = options.get("spoolman_url", "").strip().rstrip("/")
 HA_CAMERA_ENTITY = options.get("ha_camera_entity", "").strip()
+HA_LIGHT_ENTITY  = options.get("ha_light_entity", "").strip()
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN")
 HA_API_BASE      = "http://supervisor/core/api"
 
@@ -85,8 +86,8 @@ STRINGS = {
         "low_filament":   "⚠️ נגמר חוט! סלוט {slot} נותר בערך: {grams}g",
         "connected":      "✅ הבוט מחובר ועובד!",
         "disconnected":   "🔴 הפסקתי עבודה.",
-        "status_printing": "🖨️ מדפיס כעת...\nקובץ: {filename}\nמשקל: {weight}g\nהתקדמות: {pct}%\nזמן נותר: {eta}",
-        "status_idle":    "💤 המדפסת כרגע במצב המתנה.",
+        "status_printing": "🖨️ מדפיס כעת...\nקובץ: {filename}\nמשקל: {weight}g\nהתקדמות: {pct}%\nזמן נותר: {eta}\n{light_status}",
+        "status_idle":    "💤 המדפסת כרגע במצב המתנה.\n{light_status}",
         "ams_title":      "📦 סטטוס מערכת ה-AMS:\n",
         "ams_slot":       "סלוט {slot}: {emoji} סוג: {type} ({brand}) - נותר משוער: {grams}g\n",
         "ams_spoolman_slot": "סלוט {slot}: {emoji} סוג: {brand} {material} - נותר: {grams}g (Spoolman)\n",
@@ -103,6 +104,7 @@ STRINGS = {
             "/status — סטטוס נוכחי של המדפסת\n"
             "/ams — סטטוס מגשי ה-AMS\n"
             "/cam — צילום חי מהמדפסת (מצריך HA)\n"
+            "/light — הדלקה/כיבוי של מנורת המדפסת\n"
             "/spools — רשימת ספולים ב-Spoolman\n"
             "/map <slot> <spool\\_id> — שיוך סלוט ל-Spoolman\n"
             "/spoolman <spool\\_id> <slot> — שיוך (פורמט חלופי)\n"
@@ -110,6 +112,10 @@ STRINGS = {
         ),
         "cam_error":      "❌ שגיאה במשיכת תמונה מ-Home Assistant: {error}",
         "cam_no_entity":  "❌ לא הוגדרה מצלמה ולא נמצאה מצלמת Bambu אוטומטית ב-Home Assistant.",
+        "light_on":       "💡 המנורה דולקת",
+        "light_off":      "🌑 המנורה כבויה",
+        "light_fail":     "❌ שגיאה בשליטה על המנורה: {error}",
+        "light_no_entity": "❌ לא הוגדר גוף תאורה ולא נמצא גוף תאורה אוטומטי של Bambu ב-Home Assistant.",
         "ha_no_api":      "❌ הבוט לא רץ כ-Add-on עם הרשאות API של Home Assistant."
     },
     "en": {
@@ -120,8 +126,8 @@ STRINGS = {
         "low_filament":   "⚠️ Low filament! Slot {slot}: ~{grams}g left",
         "connected":      "✅ Bot connected and running!",
         "disconnected":   "🔴 Bot stopped.",
-        "status_printing": "🖨️ Currently Printing...\nFile: {filename}\nWeight: {weight}g\nProgress: {pct}%\nETA: {eta}",
-        "status_idle":    "💤 Printer is currently idle.",
+        "status_printing": "🖨️ Currently Printing...\nFile: {filename}\nWeight: {weight}g\nProgress: {pct}%\nETA: {eta}\n{light_status}",
+        "status_idle":    "💤 Printer is currently idle.\n{light_status}",
         "ams_title":      "📦 AMS Status:\n",
         "ams_slot":       "Slot {slot}: {emoji} Type: {type} ({brand}) - Estimated: {grams}g\n",
         "ams_spoolman_slot": "Slot {slot}: {emoji} Type: {brand} {material} - Remaining: {grams}g (Spoolman)\n",
@@ -138,6 +144,7 @@ STRINGS = {
             "/status — Current printer status\n"
             "/ams — AMS slot status\n"
             "/cam — Live snapshot (requires HA)\n"
+            "/light — Toggle printer lamp (requires HA)\n"
             "/spools — List Spoolman inventory\n"
             "/map <slot> <spool\\_id> — Map AMS slot to Spoolman spool\n"
             "/spoolman <spool\\_id> <slot> — Map spool (alternative format)\n"
@@ -145,6 +152,10 @@ STRINGS = {
         ),
         "cam_error":      "❌ Error fetching snapshot from Home Assistant: {error}",
         "cam_no_entity":  "❌ No camera entity configured and no Bambu camera discovered autoamtically in Home Assistant.",
+        "light_on":       "💡 Light is ON",
+        "light_off":      "🌑 Light is OFF",
+        "light_fail":     "❌ Error controlling the light: {error}",
+        "light_no_entity": "❌ No light entity configured and no Bambu light discovered automatically in Home Assistant.",
         "ha_no_api":      "❌ Bot is not running as an Add-on with Home Assistant API access."
     }
 }
@@ -210,6 +221,57 @@ def get_ha_snapshot(entity_id=None):
     except Exception as e:
         return None, t("cam_error", error=str(e))
 
+def get_ha_light_state(entity_id=None):
+    """Fetches the current state of a light entity from Home Assistant."""
+    if not SUPERVISOR_TOKEN:
+        return None, None
+    
+    headers = {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
+    
+    if not entity_id:
+        # Auto-discover light entity
+        try:
+            r = requests.get(f"{HA_API_BASE}/states", headers=headers, timeout=10)
+            if r.status_code == 200:
+                states = r.json()
+                for state in states:
+                    eid = state.get("entity_id", "")
+                    # Look for light domain containing 'bambu' and 'lamp' or 'light'
+                    if eid.startswith("light.") and "bambu" in eid.lower() and ("lamp" in eid.lower() or "light" in eid.lower()):
+                        entity_id = eid
+                        log.info(f"Auto-discovered light: {entity_id}")
+                        break
+        except Exception as e:
+            log.error(f"HA state discovery failed: {e}")
+            
+    if not entity_id:
+        return None, None
+
+    try:
+        r = requests.get(f"{HA_API_BASE}/states/{entity_id}", headers=headers, timeout=10)
+        if r.status_code == 200:
+            return r.json().get("state"), entity_id
+    except Exception:
+        pass
+    return None, entity_id
+
+def set_ha_light_state(entity_id, state):
+    """Turns a light entity on or off."""
+    if not SUPERVISOR_TOKEN:
+        return t("ha_no_api")
+    
+    service = "turn_on" if state == "on" else "turn_off"
+    headers = {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
+    
+    try:
+        r = requests.post(f"{HA_API_BASE}/services/light/{service}", 
+                          headers=headers, json={"entity_id": entity_id}, timeout=10)
+        if r.status_code in (200, 201):
+            return None
+        return f"HTTP {r.status_code}"
+    except Exception as e:
+        return str(e)
+
 # ── State ─────────────────────────────────────────────────
 _state = {
     "printing": False,
@@ -262,15 +324,19 @@ def send_status(message):
     request_pushall()
     _status_refresh.wait(timeout=3)
 
+    # Fetch current light status from HA
+    light_state, _ = get_ha_light_state(HA_LIGHT_ENTITY)
+    light_str = t("light_on") if light_state == "on" else t("light_off")
+
     with _lock:
         if _state["printing"]:
             filename = _state["filename"] or "Unknown"
             pct      = _state["mc_percent"]
             weight   = _state["print_weight"]
             eta      = _format_minutes(_state["mc_remaining_time"])
-            res = t("status_printing", filename=filename, pct=pct, weight=weight, eta=eta)
+            res = t("status_printing", filename=filename, pct=pct, weight=weight, eta=eta, light_status=light_str)
         else:
-            res = t("status_idle")
+            res = t("status_idle", light_status=light_str)
     
     # Try to add a snapshot if camera is available
     img_bytes, error = get_ha_snapshot(HA_CAMERA_ENTITY)
@@ -444,6 +510,26 @@ def handle_cam(message):
     except Exception as e:
         log.error(f"Failed to send photo: {e}")
         bot.reply_to(message, f"❌ Failed to send photo: {e}")
+
+@bot.message_handler(commands=['light', 'lamp'])
+def handle_light(message):
+    """Toggles the printer light in Home Assistant."""
+    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
+    
+    current_state, entity_id = get_ha_light_state(HA_LIGHT_ENTITY)
+    if not entity_id:
+        bot.reply_to(message, t("light_no_entity"))
+        return
+        
+    # Toggle logic: if 'on' -> turn 'off', else -> turn 'on'
+    new_state = "off" if current_state == "on" else "on"
+    error = set_ha_light_state(entity_id, new_state)
+    
+    if error:
+        bot.reply_to(message, t("light_fail", error=error))
+    else:
+        msg = t("light_on") if new_state == "on" else t("light_off")
+        bot.reply_to(message, msg)
 
 # ── MQTT callbacks ────────────────────────────────────────
 def on_connect(client, userdata, flags, rc):
