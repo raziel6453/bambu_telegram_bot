@@ -6,7 +6,7 @@ Sends print start/finish notifications, progress updates, and Spoolman filament 
 
 import os, sys, time, json, threading, logging, requests, ssl, yaml, html
 from datetime import datetime
-VERSION = "2026-04-13.v1"
+VERSION = "2026-04-13.v2"
 
 try:
     import paho.mqtt.client as mqtt
@@ -117,7 +117,7 @@ STRINGS = {
         "low_filament":   "⚠️ נגמר חוט! סלוט {slot} נותר בערך: {grams}",
         "connected":      "✅ הבוט מחובר ועובד!",
         "disconnected":   "🔴 הפסקתי עבודה.",
-        "status_printing": "🖨️ מדפיס כעת...\nקובץ: {filename}\nמשקל: {weight}\nהתקדמות: {pct}%\nזמן נותר: {eta}\n{light_status}",
+        "status_printing": "🖨️ מדפיס כעת...\nקובץ: {filename}\nמשקל: {weight}\nנותר בספול: {spool_rem}\nהתקדמות: {pct}%\nזמן נותר: {eta}\n{light_status}",
         "status_idle":    "💤 המדפסת כרגע במצב המתנה.\n{light_status}",
         "ams_title":      "📦 סטטוס מערכת ה-AMS:\n",
         "ams_slot":       "סלוט {slot}: {emoji} סוג: {type} ({brand}) - נותר משוער: {grams}\n",
@@ -158,7 +158,7 @@ STRINGS = {
         "low_filament":   "⚠️ Low filament! Slot {slot}: ~{grams} left",
         "connected":      "✅ Bot connected and running!",
         "disconnected":   "🔴 Bot stopped.",
-        "status_printing": "🖨️ Currently Printing...\nFile: {filename}\nWeight: {weight}\nProgress: {pct}%\nETA: {eta}\n{light_status}",
+        "status_printing": "🖨️ Currently Printing...\nFile: {filename}\nWeight: {weight}\nSpool Remaining: {spool_rem}\nProgress: {pct}%\nETA: {eta}\n{light_status}",
         "status_idle":    "💤 Printer is currently idle.\n{light_status}",
         "ams_title":      "📦 AMS Status:\n",
         "ams_slot":       "Slot {slot}: {emoji} Type: {type} ({brand}) - Estimated: {grams}\n",
@@ -391,8 +391,25 @@ def send_status(message):
             except:
                 weight_str = "Unknown"
             
+            # Calculate Spoolman Remaining if active
+            spool_rem_str = "N/A"
+            tray = _state.get("tray_now", 255)
+            if SPOOLMAN_URL and tray != 255:
+                mapping = load_spoolman_mapping()
+                spool_id = mapping.get(str(tray))
+                if spool_id:
+                    try:
+                        r = requests.get(f"{SPOOLMAN_URL}/api/v1/spool/{spool_id}", timeout=5)
+                        if r.status_code == 200:
+                            s_data = r.json()
+                            rem = s_data.get("remaining_weight")
+                            if rem is not None:
+                                spool_rem_str = f"{float(rem):.1f}g"
+                    except Exception:
+                        pass
+
             eta = _format_minutes(_state["mc_remaining_time"])
-            res = t("status_printing", filename=filename, pct=pct, weight=weight_str, eta=eta, light_status=light_str)
+            res = t("status_printing", filename=filename, pct=pct, weight=weight_str, spool_rem=spool_rem_str, eta=eta, light_status=light_str)
             res += f"\n\n<code>Ver: {VERSION}</code>"
         else:
             res = t("status_idle", light_status=light_str)
