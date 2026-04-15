@@ -351,6 +351,21 @@ def get_ha_light_state(entity_id=None):
         pass
     return None, entity_id
 
+def get_ha_sensor_state(entity_id):
+    """Fetches the state of a specific sensor from HA."""
+    if not SUPERVISOR_TOKEN or not entity_id:
+        return None
+    headers = {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
+    try:
+        r = requests.get(f"{HA_API_BASE}/states/{entity_id}", headers=headers, timeout=5)
+        if r.status_code == 200:
+            val = r.json().get("state")
+            if val not in ("unknown", "unavailable", "None", ""):
+                return val
+    except Exception as e:
+        log.error(f"Failed to fetch {entity_id} from HA: {e}")
+    return None
+
 def discover_ha_weight_entity():
     """Scan HA entities to find a Bambu weight sensor automatically."""
     global _discovered_weight_entity
@@ -427,6 +442,51 @@ def _format_duration(seconds):
 
 def _finish_time(remaining_mins):
     """Return the expected finish time as HH:MM in Jerusalem time."""
+def _smart_remaining():
+    """Calculate remaining minutes using HA sensors or mathematical extrapolation."""
+    # 1. Supreme Priority: Direct Home Assistant Sensor (if available)
+    if HA_API_AVAILABLE and SUPERVISOR_TOKEN:
+        weight_entity = HA_WEIGHT_ENTITY or _discovered_weight_entity
+        if weight_entity and "_print_weight" in weight_entity:
+            ha_prefix = weight_entity.replace("_print_weight", "")
+            raw_rem = get_ha_sensor_state(f"{ha_prefix}_remaining_time")
+            if raw_rem and str(raw_rem).isdigit():
+                return int(raw_rem)
+
+    # 2. Primary: Mathematical Extrapolation
+    mqtt_rem = _state.get("mc_remaining_time", 0)
+    pct      = _state.get("mc_percent", 0)
+    start    = _state.get("start_time")
+
+    if start and pct and pct > 5:
+        elapsed_mins = (datetime.now() - start).total_seconds() / 60.0
+        remaining = elapsed_mins * (100 - pct) / pct
+        return max(0, int(remaining))
+
+    # 3. Fallback: Trust the MQTT value early in the print
+    if mqtt_rem > 0:
+        return mqtt_rem
+
+    return 0
+
+def _finish_time(remaining_mins):
+    """Calculates exactly when the print will finish."""
+    # 1. Supreme Priority: Direct Home Assistant Sensor (if available)
+    if HA_API_AVAILABLE and SUPERVISOR_TOKEN:
+        weight_entity = HA_WEIGHT_ENTITY or _discovered_weight_entity
+        if weight_entity and "_print_weight" in weight_entity:
+            ha_prefix = weight_entity.replace("_print_weight", "")
+            raw_end = get_ha_sensor_state(f"{ha_prefix}_end_time")
+            if raw_end and "T" in str(raw_end):
+                try:
+                    from datetime import timezone, timedelta
+                    jerusalem = timezone(timedelta(hours=3))
+                    dt = datetime.fromisoformat(str(raw_end).replace('Z', '+00:00'))
+                    return dt.astimezone(jerusalem).strftime("%H:%M")
+                except Exception:
+                    pass
+
+    # 2. Local Fallback
     if remaining_mins <= 0:
         return "–"
     try:
@@ -436,25 +496,6 @@ def _finish_time(remaining_mins):
         return finish.strftime("%H:%M")
     except Exception:
         return "–"
-
-def _smart_remaining():
-    """Calculate remaining minutes using pure mathematical extrapolation.
-    This completely ignores Bambu's notoriously frozen MQTT ETAs after 5%."""
-    mqtt_rem = _state.get("mc_remaining_time", 0)
-    pct      = _state.get("mc_percent", 0)
-    start    = _state.get("start_time")
-
-    # Primary: Mathematical Extrapolation (Very accurate after the first layers)
-    if start and pct and pct > 5:
-        elapsed_mins = (datetime.now() - start).total_seconds() / 60.0
-        remaining = elapsed_mins * (100 - pct) / pct
-        return max(0, remaining)
-
-    # Fallback: Trust the MQTT value early in the print (0-5%)
-    if mqtt_rem > 0:
-        return mqtt_rem
-
-    return 0
 
 def request_pushall():
     """Ask the printer to push its full current state over MQTT."""
@@ -534,12 +575,15 @@ def send_status(message):
 
     # Try to fetch weight from HA sensor/entity (configured or auto-discovered)
     ha_weight = None
+    ha_prefix = None
     if HA_API_AVAILABLE:
         weight_entity = HA_WEIGHT_ENTITY or discover_ha_weight_entity()
         if weight_entity:
+            if "_print_weight" in weight_entity:
+                ha_prefix = weight_entity.replace("_print_weight", "")
             try:
-                val, _ = get_ha_light_state(weight_entity)
-                if val and val not in ("unknown", "unavailable"):
+                val = get_ha_sensor_state(weight_entity)
+                if val:
                     cleaned_val = str(val).lower().replace('g', '').strip()
                     ha_weight = round(float(cleaned_val), 1)
                     log.info(f"Fetched weight from HA entity {weight_entity}: {ha_weight}g")
@@ -555,14 +599,13 @@ def send_status(message):
             # ── Weight (filament used estimate) ───────────────
             weight_str = "N/A"
 
-            # 1) Best source: MQTT print_weight (if non-zero)
-            mqtt_w = _state.get("print_weight", 0.0)
-            if mqtt_w and float(mqtt_w) > 0:
-                weight_str = f"{float(mqtt_w):.1f}g"
-
-            # 2) HA weight sensor (configured or auto-discovered)
-            elif ha_weight is not None and ha_weight > 0:
+            # 1) Best source: HA weight sensor directly
+            if ha_weight is not None and ha_weight > 0:
                 weight_str = f"{ha_weight:.1f}g"
+
+            # 2) MQTT print_weight (if non-zero)
+            elif _state.get("print_weight", 0.0) > 0:
+                weight_str = f"{float(_state['print_weight']):.1f}g"
 
             # 3) Estimate from Spoolman: start_weight - current_remaining
             elif SPOOLMAN_URL and tray != 255:
@@ -596,7 +639,7 @@ def send_status(message):
                     except Exception:
                         pass
 
-            # ── Remaining time (smart: MQTT or extrapolated) ──
+            # ── Remaining time (smart: HA > MQTT/Extrapolated) ──
             rem_mins = _smart_remaining()
             eta      = _format_minutes(rem_mins)
             finish   = _finish_time(rem_mins)
