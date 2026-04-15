@@ -1048,8 +1048,16 @@ def on_message(client, userdata, msg):
         # Print started
         if gcode_state == "RUNNING" and prev_state in ("PREPARE", "IDLE", "FINISH", ""):
             _state["printing"]   = True
-            _state["start_time"] = datetime.now()
             _state["last_milestone"] = 0
+            
+            # If we connected mid-print, backdate the start_time so extrapolation doesn't think we just started at 0 minutes.
+            if 1 < mc_percent < 100 and mc_remaining > 0:
+                total_est_mins = mc_remaining / (1 - (mc_percent / 100.0))
+                elapsed_mins = total_est_mins * (mc_percent / 100.0)
+                _state["start_time"] = datetime.now() - timedelta(minutes=elapsed_mins)
+            else:
+                _state["start_time"] = datetime.now()
+
             
             # Optionally capture spool start weight
             tray = _state.get("tray_now", 255)
