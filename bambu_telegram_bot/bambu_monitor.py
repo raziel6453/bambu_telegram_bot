@@ -440,8 +440,7 @@ def _format_duration(seconds):
     m = rem // 60
     return f"{h}h {m}m" if h else f"{m}m"
 
-def _finish_time(remaining_mins):
-    """Return the expected finish time as HH:MM in Jerusalem time."""
+
 def _smart_remaining():
     """Calculate remaining minutes using HA sensors or mathematical extrapolation."""
     # 1. Supreme Priority: Direct Home Assistant Sensor (if available)
@@ -562,105 +561,106 @@ def check_spoolman_low_stock(spool_id):
 def send_status(message):
     if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
 
-    # Request a live snapshot from the printer and wait up to 3 s for the reply
-    _status_refresh.clear()
-    request_pushall()
-    _status_refresh.wait(timeout=3)
+    try:
+        # Request a live snapshot from the printer and wait up to 3 s for the reply
+        _status_refresh.clear()
+        request_pushall()
+        _status_refresh.wait(timeout=3)
 
-    # Fetch current light status from HA if available
-    light_str = ""
-    if HA_API_AVAILABLE:
-        light_state, _ = get_ha_light_state(HA_LIGHT_ENTITY)
-        light_str = "\n" + (t("light_on") if light_state == "on" else t("light_off"))
+        # Fetch current light status from HA if available
+        light_str = ""
+        if HA_API_AVAILABLE:
+            light_state, _ = get_ha_light_state(HA_LIGHT_ENTITY)
+            light_str = "\n" + (t("light_on") if light_state == "on" else t("light_off"))
 
-    # Try to fetch weight from HA sensor/entity (configured or auto-discovered)
-    ha_weight = None
-    ha_prefix = None
-    if HA_API_AVAILABLE:
-        weight_entity = HA_WEIGHT_ENTITY or discover_ha_weight_entity()
-        if weight_entity:
-            if "_print_weight" in weight_entity:
-                ha_prefix = weight_entity.replace("_print_weight", "")
-            try:
-                val = get_ha_sensor_state(weight_entity)
-                if val:
-                    cleaned_val = str(val).lower().replace('g', '').strip()
-                    ha_weight = round(float(cleaned_val), 1)
-                    log.info(f"Fetched weight from HA entity {weight_entity}: {ha_weight}g")
-            except Exception as e:
-                log.error(f"Failed to fetch weight from HA sensor: {e}")
+        # Try to fetch weight from HA sensor/entity (configured or auto-discovered)
+        ha_weight = None
+        ha_prefix = None
+        if HA_API_AVAILABLE:
+            weight_entity = HA_WEIGHT_ENTITY or discover_ha_weight_entity()
+            if weight_entity:
+                if "_print_weight" in weight_entity:
+                    ha_prefix = weight_entity.replace("_print_weight", "")
+                try:
+                    val = get_ha_sensor_state(weight_entity)
+                    if val:
+                        cleaned_val = str(val).lower().replace('g', '').strip()
+                        ha_weight = round(float(cleaned_val), 1)
+                        log.info(f"Fetched weight from HA entity {weight_entity}: {ha_weight}g")
+                except Exception as e:
+                    log.error(f"Failed to fetch weight from HA sensor: {e}")
 
-    with _lock:
-        if _state["printing"]:
-            filename = _state["filename"] or "Unknown"
-            pct      = _state["mc_percent"]
-            tray     = _state.get("tray_now", 255)
+        with _lock:
+            if _state["printing"]:
+                filename = _state["filename"] or "Unknown"
+                pct      = _state["mc_percent"]
+                tray     = _state.get("tray_now", 255)
 
-            # ── Weight (filament used estimate) ───────────────
-            weight_str = "N/A"
+                # ── Weight (filament used estimate) ───────────────
+                weight_str = "N/A"
 
-            # 1) Best source: HA weight sensor directly
-            if ha_weight is not None and ha_weight > 0:
-                weight_str = f"{ha_weight:.1f}g"
+                if ha_weight is not None and ha_weight > 0:
+                    weight_str = f"{ha_weight:.1f}g"
+                elif _state.get("print_weight", 0.0) > 0:
+                    weight_str = f"{float(_state['print_weight']):.1f}g"
+                elif SPOOLMAN_URL and tray != 255:
+                    mapping    = load_spoolman_mapping()
+                    spool_id   = mapping.get(str(tray))
+                    sw_start   = _state.get("spool_start_weight")
+                    if spool_id and sw_start:
+                        try:
+                            r2 = requests.get(f"{SPOOLMAN_URL}/api/v1/spool/{spool_id}", timeout=5)
+                            if r2.status_code == 200:
+                                cur_rem = r2.json().get("remaining_weight")
+                                if cur_rem is not None:
+                                    used = float(sw_start) - float(cur_rem)
+                                    if used > 0:
+                                        weight_str = f"~{used:.1f}g"
+                        except Exception:
+                            pass
 
-            # 2) MQTT print_weight (if non-zero)
-            elif _state.get("print_weight", 0.0) > 0:
-                weight_str = f"{float(_state['print_weight']):.1f}g"
+                # ── Spool remaining ───────────────────────────────
+                spool_rem_str = "N/A"
+                if SPOOLMAN_URL and tray != 255:
+                    mapping  = load_spoolman_mapping()
+                    spool_id = mapping.get(str(tray))
+                    if spool_id:
+                        try:
+                            r3 = requests.get(f"{SPOOLMAN_URL}/api/v1/spool/{spool_id}", timeout=5)
+                            if r3.status_code == 200:
+                                rem = r3.json().get("remaining_weight")
+                                if rem is not None:
+                                    spool_rem_str = f"{float(rem):.1f}g"
+                        except Exception:
+                            pass
 
-            # 3) Estimate from Spoolman: start_weight - current_remaining
-            elif SPOOLMAN_URL and tray != 255:
-                mapping    = load_spoolman_mapping()
-                spool_id   = mapping.get(str(tray))
-                sw_start   = _state.get("spool_start_weight")
-                if spool_id and sw_start:
-                    try:
-                        r2 = requests.get(f"{SPOOLMAN_URL}/api/v1/spool/{spool_id}", timeout=5)
-                        if r2.status_code == 200:
-                            cur_rem = r2.json().get("remaining_weight")
-                            if cur_rem is not None:
-                                used = float(sw_start) - float(cur_rem)
-                                if used > 0:
-                                    weight_str = f"~{used:.1f}g"
-                    except Exception:
-                        pass
+                # ── Remaining time (smart: HA > MQTT/Extrapolated) ──
+                rem_mins = _smart_remaining()
+                eta      = _format_minutes(rem_mins)
+                finish   = _finish_time(rem_mins)
 
-            # ── Spool remaining ───────────────────────────────
-            spool_rem_str = "N/A"
-            if SPOOLMAN_URL and tray != 255:
-                mapping  = load_spoolman_mapping()
-                spool_id = mapping.get(str(tray))
-                if spool_id:
-                    try:
-                        r3 = requests.get(f"{SPOOLMAN_URL}/api/v1/spool/{spool_id}", timeout=5)
-                        if r3.status_code == 200:
-                            rem = r3.json().get("remaining_weight")
-                            if rem is not None:
-                                spool_rem_str = f"{float(rem):.1f}g"
-                    except Exception:
-                        pass
+                res = t("status_printing", filename=filename, pct=pct, weight=weight_str,
+                        spool_rem=spool_rem_str, eta=eta, finish=finish, light_status=light_str)
+            else:
+                res = t("status_idle", light_status=light_str)
+        
+        # Try to add a snapshot if HA is available
+        if HA_API_AVAILABLE:
+            img_bytes, error = get_ha_snapshot(HA_CAMERA_ENTITY)
+            if img_bytes:
+                try:
+                    bot.send_photo(message.chat.id, img_bytes, caption=res)
+                    return
+                except Exception as e:
+                    log.error(f"Failed to send status photo: {e}")
+                
+        # Fallback to text if snapshot fails or is not enabled or no HA token
+        bot.reply_to(message, res)
 
-            # ── Remaining time (smart: HA > MQTT/Extrapolated) ──
-            rem_mins = _smart_remaining()
-            eta      = _format_minutes(rem_mins)
-            finish   = _finish_time(rem_mins)
-
-            res = t("status_printing", filename=filename, pct=pct, weight=weight_str,
-                    spool_rem=spool_rem_str, eta=eta, finish=finish, light_status=light_str)
-        else:
-            res = t("status_idle", light_status=light_str)
-    
-    # Try to add a snapshot if HA is available
-    if HA_API_AVAILABLE:
-        img_bytes, error = get_ha_snapshot(HA_CAMERA_ENTITY)
-        if img_bytes:
-            try:
-                bot.send_photo(message.chat.id, img_bytes, caption=res)
-                return
-            except Exception as e:
-                log.error(f"Failed to send status photo: {e}")
-            
-    # Fallback to text if snapshot fails or is not enabled or no HA token
-    bot.reply_to(message, res)
+    except Exception as e:
+        import traceback
+        err_msg = f"Crash in /status:\n{e}\n\n{traceback.format_exc()}"
+        bot.reply_to(message, err_msg)
 
 @bot.message_handler(commands=['spools', 'inventory'])
 def send_spools(message):
