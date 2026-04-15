@@ -115,14 +115,14 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 # ── Messages ──────────────────────────────────────────────
 STRINGS = {
     "he": {
-        "print_start":    "🖨️ ההדפסה התחילה!\nקובץ: {filename}\nמשקל: {weight}\nמשך משוער: {eta}",
-        "print_done":     "✅ ההדפסה הסתיימה!\nקובץ: {filename}\nמשקל: {weight}\nסה\"כ בזמן: {duration}",
+        "print_start":    "🖨️ ההדפסה התחילה!\nקובץ: {filename}\nמשקל צפוי: {weight}\nמשך משוער: {eta} (יגמר בסביבות {finish})\n",
+        "print_done":     "✅ ההדפסה הסתיימה!\nקובץ: {filename}\nמשקל חוט שהישתמש: {weight}\nסה\"כ זמן: {duration}",
         "print_failed":   "❌ ההדפסה נכשלה.\nקובץ: {filename}",
-        "progress":       "📊 התקדמות: {pct}%\nנותר: {remaining}",
+        "progress":       "📊 התקדמות: {pct}%\nנותר: {remaining} (יגמר בסביבות {finish})",
         "low_filament":   "⚠️ נגמר חוט! סלוט {slot} נותר בערך: {grams}",
         "connected":      "✅ הבוט מחובר ועובד!",
         "disconnected":   "🔴 הפסקתי עבודה.",
-        "status_printing": "🖨️ מדפיס כעת...\nקובץ: {filename}\nמשקל: {weight}\nנותר בספול: {spool_rem}\nהתקדמות: {pct}%\nזמן נותר: {eta}\n{light_status}",
+        "status_printing": "🖨️ מדפיס כעת...\nקובץ: {filename}\nמשקל צפוי להדפסה: {weight}\nנותר בספול: {spool_rem}\nהתקדמות: {pct}%\nזמן נותר: {eta}\n🏹 יגמר בסביבות: {finish}\n{light_status}",
         "status_idle":    "💤 המדפסת כרגע במצב המתנה.\n{light_status}",
         "ams_title":      "📦 סטטוס מערכת ה-AMS:\n",
         "ams_slot":       "סלוט {slot}: {emoji} סוג: {type} ({brand}) - נותר משוער: {grams}\n",
@@ -179,14 +179,14 @@ STRINGS = {
         "history_empty":  "אין הדפסות שמורות שעד."
     },
     "en": {
-        "print_start":    "🖨️ Print started!\nFile: {filename}\nWeight: {weight}\nETA: {eta}",
-        "print_done":     "✅ Print finished!\nFile: {filename}\nWeight: {weight}\nTotal time: {duration}",
+        "print_start":    "🖨️ Print started!\nFile: {filename}\nEst. filament: {weight}\nETA: {eta} (finishes at {finish})",
+        "print_done":     "✅ Print finished!\nFile: {filename}\nFilament used: {weight}\nTotal time: {duration}",
         "print_failed":   "❌ Print failed.\nFile: {filename}",
-        "progress":       "📊 Progress: {pct}%\nRemaining: {remaining}",
+        "progress":       "📊 Progress: {pct}%\nRemaining: {remaining} (finishes at {finish})",
         "low_filament":   "⚠️ Low filament! Slot {slot}: ~{grams} left",
         "connected":      "✅ Bot connected and running!",
         "disconnected":   "🔴 Bot stopped.",
-        "status_printing": "🖨️ Currently Printing...\nFile: {filename}\nWeight: {weight}\nSpool Remaining: {spool_rem}\nProgress: {pct}%\nETA: {eta}\n{light_status}",
+        "status_printing": "🖨️ Currently Printing...\nFile: {filename}\nEst. filament: {weight}\nSpool remaining: {spool_rem}\nProgress: {pct}%\nTime remaining: {eta}\n🏹 Finishes at: {finish}\n{light_status}",
         "status_idle":    "💤 Printer is currently idle.\n{light_status}",
         "ams_title":      "📦 AMS Status:\n",
         "ams_slot":       "Slot {slot}: {emoji} Type: {type} ({brand}) - Estimated: {grams}\n",
@@ -425,6 +425,19 @@ def _format_duration(seconds):
     m = rem // 60
     return f"{h}h {m}m" if h else f"{m}m"
 
+def _finish_time(remaining_mins):
+    """Return the expected finish time as HH:MM in Jerusalem time."""
+    if remaining_mins <= 0:
+        return "–"
+    try:
+        from datetime import timezone, timedelta
+        # Jerusalem is UTC+3 (Israel Standard Time / IDT varies but +3 is safe for IL)
+        jerusalem = timezone(timedelta(hours=3))
+        finish = datetime.now(jerusalem) + timedelta(minutes=int(remaining_mins))
+        return finish.strftime("%H:%M")
+    except Exception:
+        return "–"
+
 def request_pushall():
     """Ask the printer to push its full current state over MQTT."""
     global _mqtt_client
@@ -547,7 +560,7 @@ def send_status(message):
                         pass
 
             eta = _format_minutes(_state["mc_remaining_time"])
-            res = t("status_printing", filename=filename, pct=pct, weight=weight_str, spool_rem=spool_rem_str, eta=eta, light_status=light_str)
+            res = t("status_printing", filename=filename, pct=pct, weight=weight_str, spool_rem=spool_rem_str, eta=eta, finish=_finish_time(_state["mc_remaining_time"]), light_status=light_str)
         else:
             res = t("status_idle", light_status=light_str)
     
@@ -1001,7 +1014,7 @@ def on_message(client, userdata, msg):
             # Format weight for notification
             w_disp = f"{float(_state['print_weight']):.1f}g"
             
-            send_telegram_with_photo(t("print_start", filename=filename or "–", weight=w_disp, eta=eta))
+            send_telegram_with_photo(t("print_start", filename=filename or "–", weight=w_disp, eta=eta, finish=_finish_time(mc_remaining)))
 
         # Print finished
         elif gcode_state == "FINISH" and was_printing:
@@ -1063,7 +1076,7 @@ def on_message(client, userdata, msg):
             for milestone in (25, 50, 75):
                 if mc_percent >= milestone > _state["last_milestone"]:
                     _state["last_milestone"] = milestone
-                    send_telegram_with_photo(t("progress", pct=milestone, remaining=_format_minutes(mc_remaining)))
+                    send_telegram_with_photo(t("progress", pct=milestone, remaining=_format_minutes(mc_remaining), finish=_finish_time(mc_remaining)))
                     break
 
         # Process AMS Slot data
