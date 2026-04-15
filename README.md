@@ -1,19 +1,22 @@
 # 🖨️ Bambu Lab Telegram Monitor
 
-A Telegram bot that monitors your **Bambu Lab 3D printer** (A1 / P1 / X1 series) in real-time and sends smart notifications — including optional **Spoolman** filament inventory integration.
+A Telegram bot that monitors your **Bambu Lab 3D printer** (A1 / P1 / X1 series) in real-time and sends smart notifications — including live **camera snapshots**, remote print control, **Spoolman** filament inventory integration, and a full print history log.
 
 ---
 
 ## ✨ Features
 
 - 📡 **Real-time MQTT monitoring** — connects directly to your printer (local network or Bambu Cloud fallback)
-- 📬 **Telegram notifications** — print start, progress milestones (25/50/75%), completion, failure, and low-filament alerts
-- 🔍 **Live status on demand** — `/status` actively polls the printer for real-time percentage, ETA, and light status
+- 📸 **Camera snapshots on every alert** — print start, progress milestones, and completion all include a live photo
+- 📬 **Smart notifications** — print start, progress (25/50/75%), completion, failure, low-filament, and new spool detection
+- 🎛️ **Remote control** — pause, resume, and cancel prints directly from Telegram
+- 📋 **Print history** — every completed print is logged; view the last 10 with `/history`
+- 🧵 **Spoolman integration** — auto-deducts usage on completion, alerts when a spool runs low, and creates new spools on demand
+- 🆕 **AMS filament detection** — notifies you when a new spool is loaded and helps register it in Spoolman
+- 🔍 **Live status** — `/status` polls the printer in real-time with weight, remaining filament from Spoolman, ETA, and a snapshot
 - 💡 **Light control** — `/light` toggles your printer lamp (requires HA integration)
-- 📸 **Live snapshots** — `/cam` sends a real-time photo from your printer (requires HA camera entity)
-- 🧵 **Spoolman integration** — automatically deducts filament usage from tracked spools on print completion
-- 🗂️ **AMS slot mapping** — map AMS slots to Spoolman spool IDs via bot commands
-- 🌐 **Multi-language support** — Hebrew (`he`) and English (`en`)
+- ⚖️ **Auto weight discovery** — auto-detects the HA weight sensor for printers that don't broadcast weight over MQTT (e.g. A1)
+- 🌐 **Multi-language** — Hebrew (`he`) and English (`en`)
 - 🐳 **Docker-ready** — runs as a Home Assistant add-on or standalone container
 
 ---
@@ -21,32 +24,31 @@ A Telegram bot that monitors your **Bambu Lab 3D printer** (A1 / P1 / X1 series)
 ## 🚀 Installation & Setup
 
 ### 🏠 Home Assistant Add-on (Recommended)
-This is the easiest way to run the bot. It will automatically integrate with Home Assistant and simplified configuration.
 
 1. Go to **Settings → Add-ons → Add-on Store**.
 2. Click the ⋮ menu (top right) → **Repositories**.
-3. Add this URL: `https://github.com/raziel6453/bambu_telegram_bot`
-4. Find **Bambu Telegram Monitor** in the list and click **Install**.
-5. Go to the **Configuration** tab, enter your details, and click **Start**.
+3. Add: `https://github.com/raziel6453/bambu_telegram_bot`
+4. Find **Bambu Telegram Monitor** and click **Install**.
+5. Go to the **Configuration** tab, fill in your details, and click **Start**.
+
+> **Tip:** After any update from GitHub, use **Add-on Store → ⋮ → Check for updates**, then update the add-on to pull the latest code.
 
 ---
 
-### 💻 Standalone Installation (Expert)
-If you're not using Home Assistant OS, you can run the bot as a standalone service.
+### 💻 Standalone Installation
 
-1. **Clone the repository**:
+1. **Clone the repo**:
    ```bash
    git clone https://github.com/raziel6453/bambu_telegram_bot.git
    cd bambu_telegram_bot
    ```
 
-2. **Configure Settings**:
-   Edit the `options:` section in `bambu_telegram_bot/config.yaml` OR create an `options.json` in the root.
+2. **Configure**: Edit `options:` in `bambu_telegram_bot/config.yaml` or create `options.json`.
 
 3. **Run with Docker**:
    ```bash
    docker build -t bambu-monitor ./bambu_telegram_bot
-   docker run -d --name bambu-monitor -v $(pwd)/config.yaml:/app/config.yaml bambu-monitor
+   docker run -d --name bambu-monitor bambu-monitor
    ```
 
 4. **Run with Python**:
@@ -57,52 +59,101 @@ If you're not using Home Assistant OS, you can run the bot as a standalone servi
 
 ---
 
+## 🤖 Bot Commands
+
+### 📊 Status
+| Command | Description |
+|---------|-------------|
+| `/status` | Live printer status + Spoolman remaining weight + camera snapshot |
+| `/ams` | AMS slot details (type, colour, remaining %) |
+| `/history` | Last 10 completed prints (date, file, duration, grams) |
+
+### 🎥 Camera
+| Command | Description |
+|---------|-------------|
+| `/cam` | Manual live snapshot (requires HA camera entity) |
+
+### ⚡ Remote Control
+| Command | Description |
+|---------|-------------|
+| `/pause` | Pause the current print |
+| `/resume` | Resume a paused print |
+| `/cancel` | Cancel the print — asks for confirmation first |
+
+### 📦 Spoolman
+| Command | Description |
+|---------|-------------|
+| `/spools` | List all spools in your Spoolman inventory |
+| `/map <slot> <spool_id>` | Map an AMS slot (1–4) to an existing Spoolman spool |
+| `/set <slot> <brand> <material>` | Create a new spool in Spoolman and map the slot automatically |
+
+### 🔦 Tools
+| Command | Description |
+|---------|-------------|
+| `/light` | Toggle printer lamp on/off (requires HA light entity) |
+| `/debug` | Show raw MQTT payload and internal state for troubleshooting |
+| `/help` | Show all commands |
+
+---
+
 ## 🧵 Spoolman Integration
 
 If you run [Spoolman](https://github.com/Donkie/Spoolman) for filament tracking:
 
-1. Set `spoolman_url` in your config
-2. Use the `/map` bot command to associate AMS slots with Spoolman spool IDs:
+1. Set `spoolman_url` in your config (e.g. `http://192.168.1.x:7912`)
+2. Map AMS slots to spools:
 
 ```
-/map 1 42    # Maps AMS slot 1 → Spoolman spool ID 42
-/map 2 7     # Maps AMS slot 2 → Spoolman spool ID 7
+/map 1 42    # Links AMS slot 1 → spool ID 42
+/set 2 Bambu PLA  # Creates a NEW spool and links slot 2
 ```
 
-3. When a print completes, the bot will automatically deduct the used filament weight from the mapped spool.
+3. On print completion, the bot automatically deducts usage from the mapped spool.
+4. If a spool drops below `low_stock_threshold` (default **100g**), you get an alert.
+
+### New Spool Detection
+When you load a new filament, the bot detects the color/type change and prompts:
+```
+🆕 New filament detected in Slot 1!
+Color: 🔴 | Type: PLA
+
+To register: /set 1 Bambu PLA
+```
 
 ---
 
-## 🤖 Bot Commands
+## 📷 Camera & Weight (HA Add-on only)
 
-| Command | Description |
-|---------|-------------|
-| `/status` | Live printer status — polls the printer in real-time for exact percentage, ETA, light status, and a live photo |
-| `/ams` | AMS slot status (filament type, colour, remaining weight) |
-| `/cam` | Live camera snapshot (requires Home Assistant camera entity) |
-| `/light` | Toggle printer light on/off (requires Home Assistant light entity) |
-| `/debug` | Show raw MQTT and state data for troubleshooting |
-| `/spools` | List all spools in your Spoolman inventory |
-| `/map <slot> <spool_id>` | Map AMS slot (1–4) to a Spoolman spool ID |
-| `/spoolman <spool_id> <slot>` | Same as `/map` — alternative argument order |
-| `/help` | Show all available commands |
+### Camera
+- The bot **auto-discovers** your Bambu camera entity from Home Assistant.
+- Override manually with `ha_camera_entity: "camera.my_printer"` in config.
+- Every notification (start, progress, done) automatically includes a snapshot.
+
+### Weight
+- The bot **auto-discovers** the HA weight sensor for printers that don't broadcast weight via MQTT (like the A1).
+- Override manually with `ha_weight_entity: "sensor.my_printer_weight"`.
+
+> All commands are restricted to the configured `telegram_chat_id`. Messages from other users are silently ignored.
 
 ---
 
-## 📷 Camera Integration (HA Add-on only)
+## ⚙️ Configuration Options
 
-When running as a Home Assistant Add-on, the bot can fetch live snapshots from your printer's camera if you have the **Bambu Lab HA Integration** installed.
-
-1. Ensure the **Bambu Lab HA Integration** is active in your Home Assistant.
-2. The bot will try to auto-discover your camera entity (e.g., `camera.p1s_camera`).
-3. If it fails, you can manually set the entity ID in the Add-on configuration under `ha_camera_entity`.
-
-### ⚖️ Weight Fallback (HA Add-on only)
-If your printer's MQTT data is missing weight info (shows 0g), you can pull it from HA:
-1. In Home Assistant, find your printer's weight sensor (usually from the Bambu Lab integration).
-2. Enter its ID (e.g., `sensor.p1s_print_weight`) into `ha_weight_entity` in the config.
-
-> **Note:** All commands are restricted to the configured `telegram_chat_id`. Messages from other users are silently ignored.
+| Option | Required | Description |
+|--------|----------|-------------|
+| `printer_ip` | ✅ | Printer local IP address |
+| `printer_serial` | ✅ | Printer serial number |
+| `printer_password` | ✅ | LAN access code |
+| `telegram_token` | ✅ | Telegram bot token |
+| `telegram_chat_id` | ✅ | Your Telegram chat ID |
+| `language` | | `he` or `en` (default: `he`) |
+| `spoolman_url` | | Spoolman base URL |
+| `low_stock_threshold` | | Alert below this many grams (default: `100`) |
+| `ha_camera_entity` | | HA camera entity ID (auto-discovered if blank) |
+| `ha_light_entity` | | HA light entity ID (auto-discovered if blank) |
+| `ha_weight_entity` | | HA weight sensor entity ID (auto-discovered if blank) |
+| `bambu_username` | | Bambu Cloud email (for cloud MQTT fallback) |
+| `bambu_password` | | Bambu Cloud password (for cloud MQTT fallback) |
 
 ---
 
@@ -125,9 +176,8 @@ bambu_telegram_bot/
 |---------|---------|
 | `paho-mqtt` | MQTT communication with the printer |
 | `pyTelegramBotAPI` | Telegram bot framework |
-| `requests` | HTTP calls to Spoolman API |
-| `flask` + `flask-cors` | Internal health/status endpoint |
-| `psutil` | System resource monitoring |
+| `requests` | HTTP calls to Home Assistant & Spoolman API |
+| `PyYAML` | Standalone config loading |
 
 ---
 
@@ -136,7 +186,7 @@ bambu_telegram_bot/
 ### Telegram Bot Token
 1. Message [@BotFather](https://t.me/BotFather) on Telegram
 2. Send `/newbot` and follow the prompts
-3. Copy the token provided
+3. Copy the token
 
 ### Telegram Chat ID
 1. Start a chat with your bot
