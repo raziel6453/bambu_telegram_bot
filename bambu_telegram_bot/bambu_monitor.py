@@ -6,7 +6,7 @@ Sends print start/finish notifications, progress updates, and Spoolman filament 
 
 import os, sys, time, json, threading, logging, requests, ssl, yaml, html
 from datetime import datetime
-VERSION = "2026-04-16.v1"
+VERSION = "2026-04-16.v2"
 
 try:
     import paho.mqtt.client as mqtt
@@ -63,10 +63,12 @@ BAMBU_PASSWORD   = options.get("bambu_password", "")
 TELEGRAM_TOKEN   = options.get("telegram_token", "")
 TELEGRAM_CHAT_ID = options.get("telegram_chat_id", "")
 LANGUAGE         = options.get("language", "he")
-SPOOLMAN_URL     = options.get("spoolman_url", "").strip().rstrip("/")
-HA_CAMERA_ENTITY = options.get("ha_camera_entity", "").strip()
-HA_LIGHT_ENTITY  = options.get("ha_light_entity", "").strip()
-HA_WEIGHT_ENTITY = options.get("ha_weight_entity", "").strip()
+SPOOLMAN_URL      = options.get("spoolman_url", "").strip().rstrip("/")
+HA_CAMERA_ENTITY  = options.get("ha_camera_entity", "").strip()
+HA_LIGHT_ENTITY   = options.get("ha_light_entity", "").strip()
+HA_WEIGHT_ENTITY  = options.get("ha_weight_entity", "").strip()
+LOW_STOCK_THRESHOLD = int(options.get("low_stock_threshold", 100))
+PRINT_HISTORY_FILE  = os.path.join(data_dir, "print_history.json")
 
 # Discovered weight entity (populated at runtime if not configured)
 _discovered_weight_entity = None
@@ -155,7 +157,19 @@ STRINGS = {
         "ams_new_filament": "🆕 חוט חדש זוהה בסלוט {slot}!\nצבע: {emoji} | סוג: {ftype}\n\nלרישום ב-Spoolman: /set {slot} <מותג> <סוג>\nלדוגמא: /set {slot} Bambu PLA",
         "setfilament_ok": "✅ ספול חדש נוצר ב-Spoolman ושויך לסלוט {slot}.",
         "setfilament_fail": "❌ שגיאה ביצירת ספול. ודא ש-Spoolman מוגדר.",
-        "setfilament_usage": "❌ שימוש: /set <סלוט> <מותג> <סוג>\nלדוגמא: /set 1 Bambu PLA"
+        "setfilament_usage": "❌ שימוש: /set <סלוט> <מותג> <סוג>\nלדוגמא: /set 1 Bambu PLA",
+        "ctrl_pause":     "⏸️ הפסקת הדפסה בבקשה...",
+        "ctrl_resume":    "▶️ המשך הדפסה בבקשה...",
+        "ctrl_cancel_confirm": "⚠️ בטוח שברצונך לבטל את ההדפסה?",
+        "ctrl_cancel_yes": "❌ מבטל את ההדפסה...",
+        "ctrl_cancel_no":  "✅ ביטול בוטל. הדפסה ממשיכת.",
+        "ctrl_not_printing": "❌ אין הדפסה פעילה כעת.",
+        "ctrl_speed_ok":  "⚡ מהירות שונתה ל-{mode}.",
+        "ctrl_speed_bad": "❌ בחר מהירות תקינה: /speed 1-4\n1=שקט 2=סטנדרט 3=ספורט 4=סוניק",
+        "low_stock":      "⚠️ ספול #{sid} ({label}) על סיום — נותר רק {grams}g!",
+        "history_title":  "💻 היסטוריית הדפסות (10 אחרונות):\n",
+        "history_item":   "🗓 {date} | {filename} | {duration} | {grams}\n",
+        "history_empty":  "אין הדפסות שמורות שעד."
     },
     "en": {
         "print_start":    "🖨️ Print started!\nFile: {filename}\nWeight: {weight}\nETA: {eta}",
@@ -200,7 +214,19 @@ STRINGS = {
         "ams_new_filament": "🆕 New filament detected in Slot {slot}!\nColor: {emoji} | Type: {ftype}\n\nTo register in Spoolman: /set {slot} <brand> <material>\nExample: /set {slot} Bambu PLA",
         "setfilament_ok": "✅ New spool created in Spoolman and mapped to Slot {slot}.",
         "setfilament_fail": "❌ Failed to create spool. Make sure Spoolman is configured.",
-        "setfilament_usage": "❌ Usage: /set <slot> <brand> <material>\nExample: /set 1 Bambu PLA"
+        "setfilament_usage": "❌ Usage: /set <slot> <brand> <material>\nExample: /set 1 Bambu PLA",
+        "ctrl_pause":     "⏸️ Pausing print...",
+        "ctrl_resume":    "▶️ Resuming print...",
+        "ctrl_cancel_confirm": "⚠️ Are you sure you want to cancel the print?",
+        "ctrl_cancel_yes": "❌ Cancelling print...",
+        "ctrl_cancel_no":  "✅ Cancel aborted. Print continues.",
+        "ctrl_not_printing": "❌ No print is currently active.",
+        "ctrl_speed_ok":  "⚡ Speed changed to {mode}.",
+        "ctrl_speed_bad": "❌ Choose a valid speed: /speed 1-4\n1=Silent 2=Standard 3=Sport 4=Ludicrous",
+        "low_stock":      "⚠️ Spool #{sid} ({label}) is running low — only {grams}g left!",
+        "history_title":  "💻 Print History (last 10):\n",
+        "history_item":   "🗓 {date} | {filename} | {duration} | {grams}\n",
+        "history_empty":  "No prints saved yet."
     }
 }
 
@@ -397,6 +423,53 @@ def request_pushall():
         log.info("Sent pushall request to printer")
     except Exception as e:
         log.error(f"pushall publish failed: {e}")
+
+def send_printer_command(cmd_dict):
+    """Publish a print control command to the printer via MQTT."""
+    global _mqtt_client
+    if _mqtt_client is None:
+        log.warning("Cannot send command: MQTT not connected")
+        return False
+    topic   = f"device/{PRINTER_SERIAL}/request"
+    payload = json.dumps({"print": {"sequence_id": "0", **cmd_dict}})
+    try:
+        _mqtt_client.publish(topic, payload)
+        log.info(f"Sent printer command: {cmd_dict}")
+        return True
+    except Exception as e:
+        log.error(f"Printer command publish failed: {e}")
+        return False
+
+def append_print_history(entry):
+    """Append a completed print record to the history JSON file."""
+    try:
+        history = []
+        if os.path.exists(PRINT_HISTORY_FILE):
+            with open(PRINT_HISTORY_FILE, 'r') as f:
+                history = json.load(f)
+        history.append(entry)
+        history = history[-100:]  # keep last 100
+        with open(PRINT_HISTORY_FILE, 'w') as f:
+            json.dump(history, f)
+    except Exception as e:
+        log.error(f"Failed to save print history: {e}")
+
+def check_spoolman_low_stock(spool_id):
+    """Alert if a Spoolman spool has fallen below LOW_STOCK_THRESHOLD."""
+    if not SPOOLMAN_URL or not spool_id:
+        return
+    try:
+        r = requests.get(f"{SPOOLMAN_URL}/api/v1/spool/{spool_id}", timeout=5)
+        if r.status_code == 200:
+            data  = r.json()
+            rem   = data.get("remaining_weight", 9999)
+            if rem < LOW_STOCK_THRESHOLD:
+                fil   = data.get("filament", {})
+                label = f"{fil.get('brand','')} {fil.get('name','')} {fil.get('material','')}".strip()
+                send_telegram(t("low_stock", sid=spool_id, label=label, grams=f"{float(rem):.1f}"))
+                log.info(f"Low stock alert: spool {spool_id} has {rem}g remaining")
+    except Exception as e:
+        log.error(f"Low stock check failed: {e}")
 
 # ── Interactive Bot Commands ──────────────────────────────
 @bot.message_handler(commands=['status'])
@@ -677,6 +750,84 @@ def handle_set(message):
         log.error(f"set command error: {e}")
         bot.reply_to(message, t("setfilament_fail"))
 
+# ── Remote Control ────────────────────────────────────────
+@bot.message_handler(commands=['pause'])
+def handle_pause(message):
+    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
+    with _lock:
+        if not _state["printing"]:
+            bot.reply_to(message, t("ctrl_not_printing")); return
+    bot.reply_to(message, t("ctrl_pause"))
+    send_printer_command({"command": "pause"})
+
+@bot.message_handler(commands=['resume'])
+def handle_resume(message):
+    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
+    bot.reply_to(message, t("ctrl_resume"))
+    send_printer_command({"command": "resume"})
+
+@bot.message_handler(commands=['cancel'])
+def handle_cancel(message):
+    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
+    with _lock:
+        if not _state["printing"]:
+            bot.reply_to(message, t("ctrl_not_printing")); return
+    markup = telebot.types.InlineKeyboardMarkup()
+    markup.add(
+        telebot.types.InlineKeyboardButton("✅ Yes, cancel", callback_data="cancel_yes"),
+        telebot.types.InlineKeyboardButton("❌ No, keep going", callback_data="cancel_no"),
+    )
+    bot.reply_to(message, t("ctrl_cancel_confirm"), reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data in ("cancel_yes", "cancel_no"))
+def handle_cancel_callback(call):
+    if str(call.message.chat.id) != str(TELEGRAM_CHAT_ID): return
+    bot.answer_callback_query(call.id)
+    if call.data == "cancel_yes":
+        bot.edit_message_text(t("ctrl_cancel_yes"),
+                              call.message.chat.id, call.message.message_id)
+        send_printer_command({"command": "stop"})
+    else:
+        bot.edit_message_text(t("ctrl_cancel_no"),
+                              call.message.chat.id, call.message.message_id)
+
+SPEED_MODES = {"1": "Silent", "2": "Standard", "3": "Sport", "4": "Ludicrous"}
+
+@bot.message_handler(commands=['speed'])
+def handle_speed(message):
+    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
+    parts = message.text.strip().split()
+    if len(parts) < 2 or parts[1] not in SPEED_MODES:
+        bot.reply_to(message, t("ctrl_speed_bad")); return
+    mode = SPEED_MODES[parts[1]]
+    send_printer_command({"command": "print_speed", "param": parts[1]})
+    bot.reply_to(message, t("ctrl_speed_ok", mode=mode))
+
+# ── Print History ─────────────────────────────────────────
+@bot.message_handler(commands=['history'])
+def handle_history(message):
+    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
+    try:
+        if not os.path.exists(PRINT_HISTORY_FILE):
+            bot.reply_to(message, t("history_empty")); return
+        with open(PRINT_HISTORY_FILE, 'r') as f:
+            history = json.load(f)
+        if not history:
+            bot.reply_to(message, t("history_empty")); return
+        last10 = history[-10:][::-1]  # newest first
+        res = t("history_title")
+        for entry in last10:
+            grams = f"{float(entry.get('grams', 0)):.1f}g" if entry.get('grams') else "–"
+            res += t("history_item",
+                     date=entry.get("date", "?"),
+                     filename=entry.get("filename", "?")[:20],
+                     duration=entry.get("duration", "?"),
+                     grams=grams)
+        bot.reply_to(message, res)
+    except Exception as e:
+        log.error(f"history command error: {e}")
+        bot.reply_to(message, "❌ Error reading history.")
+
 @bot.message_handler(commands=['cam', 'snapshot'])
 def handle_cam(message):
     """Fetches and sends a live camera snapshot from Home Assistant."""
@@ -884,6 +1035,22 @@ def on_message(client, userdata, msg):
             log.info(f"Print finished: {filename}")
             weight_str = f"{float(weight_used):.1f}g"
             send_telegram_with_photo(t("print_done", filename=filename or "–", weight=weight_str, duration=dur))
+
+            # Save to print history
+            append_print_history({
+                "date":     datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "filename": filename or "Unknown",
+                "duration": dur or "–",
+                "grams":    weight_used,
+                "slot":     tray,
+            })
+
+            # Spoolman low stock check
+            if tray != 255:
+                mapping = load_spoolman_mapping()
+                sid = mapping.get(str(tray))
+                if sid:
+                    threading.Thread(target=check_spoolman_low_stock, args=(sid,), daemon=True).start()
 
         # Print failed / cancelled
         elif gcode_state in ("FAILED", "PAUSE") and was_printing and gcode_state == "FAILED":
