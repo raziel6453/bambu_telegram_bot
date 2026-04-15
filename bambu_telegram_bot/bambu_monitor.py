@@ -438,22 +438,21 @@ def _finish_time(remaining_mins):
         return "–"
 
 def _smart_remaining():
-    """Calculate remaining minutes more reliably.
-    Uses MQTT value if it looks valid, otherwise extrapolates from elapsed+percent."""
+    """Calculate remaining minutes using pure mathematical extrapolation.
+    This completely ignores Bambu's notoriously frozen MQTT ETAs after 5%."""
     mqtt_rem = _state.get("mc_remaining_time", 0)
     pct      = _state.get("mc_percent", 0)
     start    = _state.get("start_time")
 
-    # If MQTT gives a non-zero value and we're not near the start, trust it
-    if mqtt_rem > 0:
-        return mqtt_rem
-
-    # Fallback: extrapolate from elapsed time and percentage
-    if start and pct and pct > 5:   # need at least 5% to extrapolate reliably
+    # Primary: Mathematical Extrapolation (Very accurate after the first layers)
+    if start and pct and pct > 5:
         elapsed_mins = (datetime.now() - start).total_seconds() / 60.0
-        # total_est = elapsed / (pct/100), remaining = total_est - elapsed
         remaining = elapsed_mins * (100 - pct) / pct
         return max(0, remaining)
+
+    # Fallback: Trust the MQTT value early in the print (0-5%)
+    if mqtt_rem > 0:
+        return mqtt_rem
 
     return 0
 
