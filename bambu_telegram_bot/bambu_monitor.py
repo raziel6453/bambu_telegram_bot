@@ -147,7 +147,6 @@ STRINGS = {
             "/pause — עצירת הדפסה\n"
             "/resume — המשך הדפסה\n"
             "/cancel — ביטול הדפסה (יבקש אישור)\n"
-            "/speed 1–4 — מהירות: 1=שקט 2=סטנדרט 3=ספורט 4=סוניק\n\n"
             "📦 *Spoolman*\n"
             "/spools — רשימת ספולים\n"
             "/map <סלוט> <id> — שיוך סלוט לספולים קיים\n"
@@ -174,8 +173,6 @@ STRINGS = {
         "ctrl_cancel_yes": "❌ מבטל את ההדפסה...",
         "ctrl_cancel_no":  "✅ ביטול בוטל. הדפסה ממשיכת.",
         "ctrl_not_printing": "❌ אין הדפסה פעילה כעת.",
-        "ctrl_speed_ok":  "⚡ מהירות שונתה ל-{mode}.",
-        "ctrl_speed_bad": "❌ בחר מהירות תקינה: /speed 1-4\n1=שקט 2=סטנדרט 3=ספורט 4=סוניק",
         "low_stock":      "⚠️ ספול #{sid} ({label}) על סיום — נותר רק {grams}g!",
         "history_title":  "💻 היסטוריית הדפסות (10 אחרונות):\n",
         "history_item":   "🗓 {date} | {filename} | {duration} | {grams}\n",
@@ -214,7 +211,6 @@ STRINGS = {
             "/pause — Pause current print\n"
             "/resume — Resume paused print\n"
             "/cancel — Cancel print (asks confirmation)\n"
-            "/speed 1–4 — Speed: 1=Silent 2=Standard 3=Sport 4=Ludicrous\n\n"
             "📦 *Spoolman*\n"
             "/spools — List inventory\n"
             "/map <slot> <id> — Map slot to existing spool\n"
@@ -241,8 +237,6 @@ STRINGS = {
         "ctrl_cancel_yes": "❌ Cancelling print...",
         "ctrl_cancel_no":  "✅ Cancel aborted. Print continues.",
         "ctrl_not_printing": "❌ No print is currently active.",
-        "ctrl_speed_ok":  "⚡ Speed changed to {mode}.",
-        "ctrl_speed_bad": "❌ Choose a valid speed: /speed 1-4\n1=Silent 2=Standard 3=Sport 4=Ludicrous",
         "low_stock":      "⚠️ Spool #{sid} ({label}) is running low — only {grams}g left!",
         "history_title":  "💻 Print History (last 10):\n",
         "history_item":   "🗓 {date} | {filename} | {duration} | {grams}\n",
@@ -810,18 +804,6 @@ def handle_cancel_callback(call):
     else:
         bot.edit_message_text(t("ctrl_cancel_no"),
                               call.message.chat.id, call.message.message_id)
-
-SPEED_MODES = {"1": "Silent", "2": "Standard", "3": "Sport", "4": "Ludicrous"}
-
-@bot.message_handler(commands=['speed'])
-def handle_speed(message):
-    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
-    parts = message.text.strip().split()
-    if len(parts) < 2 or parts[1] not in SPEED_MODES:
-        bot.reply_to(message, t("ctrl_speed_bad")); return
-    mode = SPEED_MODES[parts[1]]
-    send_printer_command({"command": "print_speed", "param": parts[1]})
-    bot.reply_to(message, t("ctrl_speed_ok", mode=mode))
 
 # ── Print History ─────────────────────────────────────────
 @bot.message_handler(commands=['history'])
