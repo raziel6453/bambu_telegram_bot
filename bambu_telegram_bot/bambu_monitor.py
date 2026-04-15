@@ -6,7 +6,7 @@ Sends print start/finish notifications, progress updates, and Spoolman filament 
 
 import os, sys, time, json, threading, logging, requests, ssl, yaml, html
 from datetime import datetime
-VERSION = "2026-04-13.v2"
+VERSION = "2026-04-13.v3"
 
 try:
     import paho.mqtt.client as mqtt
@@ -67,6 +67,9 @@ SPOOLMAN_URL     = options.get("spoolman_url", "").strip().rstrip("/")
 HA_CAMERA_ENTITY = options.get("ha_camera_entity", "").strip()
 HA_LIGHT_ENTITY  = options.get("ha_light_entity", "").strip()
 HA_WEIGHT_ENTITY = options.get("ha_weight_entity", "").strip()
+
+# Discovered weight entity (populated at runtime if not configured)
+_discovered_weight_entity = None
 
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN")
 HA_API_BASE      = "http://supervisor/core/api"
@@ -288,6 +291,32 @@ def get_ha_light_state(entity_id=None):
         pass
     return None, entity_id
 
+def discover_ha_weight_entity():
+    """Scan HA entities to find a Bambu weight sensor automatically."""
+    global _discovered_weight_entity
+    if not SUPERVISOR_TOKEN:
+        return None
+    if _discovered_weight_entity:
+        return _discovered_weight_entity
+    headers = {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
+    try:
+        r = requests.get(f"{HA_API_BASE}/states", headers=headers, timeout=10)
+        if r.status_code == 200:
+            for state in r.json():
+                eid  = state.get("entity_id", "")
+                sval = state.get("state", "")
+                # Must be a sensor, mention bambu, and contain 'weight' or 'filament'
+                if (eid.startswith("sensor.") 
+                        and "bambu" in eid.lower()
+                        and any(k in eid.lower() for k in ("weight", "filament"))
+                        and sval not in ("", "unknown", "unavailable")):
+                    _discovered_weight_entity = eid
+                    log.info(f"Auto-discovered HA weight entity: {eid} = {sval}")
+                    return eid
+    except Exception as e:
+        log.error(f"Weight entity discovery failed: {e}")
+    return None
+
 def set_ha_light_state(entity_id, state):
     """Turns a light entity on or off."""
     if not SUPERVISOR_TOKEN:
@@ -364,18 +393,19 @@ def send_status(message):
         light_state, _ = get_ha_light_state(HA_LIGHT_ENTITY)
         light_str = "\n" + (t("light_on") if light_state == "on" else t("light_off"))
 
-    # Try to fetch weight from HA sensor/entity if configured and available
+    # Try to fetch weight from HA sensor/entity (configured or auto-discovered)
     ha_weight = None
-    if HA_API_AVAILABLE and HA_WEIGHT_ENTITY:
-        try:
-            val, _ = get_ha_light_state(HA_WEIGHT_ENTITY) # Reusing helper for status fetch
-            if val and val not in ("unknown", "unavailable"):
-                # Clean any 'g' suffix and convert to float
-                cleaned_val = str(val).lower().replace('g', '').strip()
-                ha_weight = round(float(cleaned_val), 1)
-                log.info(f"Fetched weight from HA entity {HA_WEIGHT_ENTITY}: {ha_weight}g")
-        except Exception as e:
-            log.error(f"Failed to fetch weight from HA sensor: {e}")
+    if HA_API_AVAILABLE:
+        weight_entity = HA_WEIGHT_ENTITY or discover_ha_weight_entity()
+        if weight_entity:
+            try:
+                val, _ = get_ha_light_state(weight_entity)
+                if val and val not in ("unknown", "unavailable"):
+                    cleaned_val = str(val).lower().replace('g', '').strip()
+                    ha_weight = round(float(cleaned_val), 1)
+                    log.info(f"Fetched weight from HA entity {weight_entity}: {ha_weight}g")
+            except Exception as e:
+                log.error(f"Failed to fetch weight from HA sensor: {e}")
 
     with _lock:
         if _state["printing"]:
