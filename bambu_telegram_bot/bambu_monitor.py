@@ -6,7 +6,7 @@ Sends print start/finish notifications, progress updates, and Spoolman filament 
 
 import os, sys, time, json, threading, logging, requests, ssl, yaml, html
 from datetime import datetime
-VERSION = "2026-04-13.v3"
+VERSION = "2026-04-16.v1"
 
 try:
     import paho.mqtt.client as mqtt
@@ -151,7 +151,11 @@ STRINGS = {
         "light_off":      "🌑 המנורה כבויה",
         "light_fail":     "❌ שגיאה בשליטה על המנורה: {error}",
         "light_no_entity": "❌ לא הוגדר גוף תאורה ולא נמצא גוף תאורה אוטומטי של Bambu ב-Home Assistant.",
-        "ha_no_api":      "❌ הבוט לא רץ כ-Add-on עם הרשאות API של Home Assistant."
+        "ha_no_api":      "❌ הבוט לא רץ כ-Add-on עם הרשאות API של Home Assistant.",
+        "ams_new_filament": "🆕 חוט חדש זוהה בסלוט {slot}!\nצבע: {emoji} | סוג: {ftype}\n\nלרישום ב-Spoolman: /setfilament {slot} <מותג> <סוג>\nלדוגמא: /setfilament {slot} Bambu PLA",
+        "setfilament_ok": "✅ ספול חדש נוצר ב-Spoolman ושויך לסלוט {slot}.",
+        "setfilament_fail": "❌ שגיאה ביצירת ספול. ודא ש-Spoolman מוגדר.",
+        "setfilament_usage": "❌ שימוש: /setfilament <סלוט> <מותג> <סוג>\nלדוגמא: /setfilament 1 Bambu PLA"
     },
     "en": {
         "print_start":    "🖨️ Print started!\nFile: {filename}\nWeight: {weight}\nETA: {eta}",
@@ -192,7 +196,11 @@ STRINGS = {
         "light_off":      "🌑 Light is OFF",
         "light_fail":     "❌ Error controlling the light: {error}",
         "light_no_entity": "❌ No light entity configured and no Bambu light discovered automatically in Home Assistant.",
-        "ha_no_api":      "❌ Bot is not running as an Add-on with Home Assistant API access."
+        "ha_no_api":      "❌ Bot is not running as an Add-on with Home Assistant API access.",
+        "ams_new_filament": "🆕 New filament detected in Slot {slot}!\nColor: {emoji} | Type: {ftype}\n\nTo register in Spoolman: /setfilament {slot} <brand> <material>\nExample: /setfilament {slot} Bambu PLA",
+        "setfilament_ok": "✅ New spool created in Spoolman and mapped to Slot {slot}.",
+        "setfilament_fail": "❌ Failed to create spool. Make sure Spoolman is configured.",
+        "setfilament_usage": "❌ Usage: /setfilament <slot> <brand> <material>\nExample: /setfilament 1 Bambu PLA"
     }
 }
 
@@ -222,6 +230,18 @@ def send_telegram(text):
         bot.send_message(TELEGRAM_CHAT_ID, text)
     except Exception as e:
         log.error(f"Telegram send failed: {e}")
+
+def send_telegram_with_photo(text):
+    """Send a message with a live camera snapshot if available, else plain text."""
+    if HA_API_AVAILABLE:
+        try:
+            img_bytes, _ = get_ha_snapshot(HA_CAMERA_ENTITY)
+            if img_bytes:
+                bot.send_photo(TELEGRAM_CHAT_ID, img_bytes, caption=text)
+                return
+        except Exception as e:
+            log.warning(f"Photo send failed, falling back to text: {e}")
+    send_telegram(text)
 
 def get_ha_snapshot(entity_id=None):
     """Fetches a camera snapshot from Home Assistant via the Supervisor API."""
@@ -348,6 +368,7 @@ _state = {
     "_raw_print": {},  # Internal: Last raw print object for debugging
 }
 _ams_state = {}
+_ams_fingerprints = {}  # slot_id -> "color:type" string to detect new spool loads
 _alerted_slots = set()
 _lock = threading.Lock()
 _mqtt_client = None          # set in main() after connection
@@ -597,6 +618,65 @@ def handle_map(message):
             pass
     bot.reply_to(message, t("spoolman_fail"))
 
+@bot.message_handler(commands=['setfilament'])
+def handle_setfilament(message):
+    """Create a new spool in Spoolman and map it to an AMS slot."""
+    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
+
+    if not SPOOLMAN_URL or SPOOLMAN_URL == "http://":
+        bot.reply_to(message, t("spoolman_not_enabled"))
+        return
+
+    parts = message.text.strip().split(maxsplit=3)
+    # /setfilament <slot> <brand> <material>
+    if len(parts) < 4:
+        bot.reply_to(message, t("setfilament_usage"))
+        return
+
+    try:
+        slot_num = int(parts[1])          # 1-based from user
+        brand    = parts[2]
+        material = parts[3]
+        slot_id  = str(slot_num - 1)     # 0-based internally
+
+        if slot_num < 1 or slot_num > 4:
+            bot.reply_to(message, t("setfilament_usage"))
+            return
+
+        # Pull color from current AMS state for this slot
+        ams_info = _ams_state.get(slot_id, {})
+        color    = ams_info.get("color", "FFFFFF")
+
+        # Create spool in Spoolman
+        payload = {
+            "filament": {"name": f"{brand} {material}", "material": material, "color_hex": color},
+            "remaining_weight": 1000,
+        }
+        r = requests.post(f"{SPOOLMAN_URL}/api/v1/spool", json=payload, timeout=10)
+        if r.status_code not in (200, 201):
+            log.error(f"Spoolman create spool failed: {r.status_code} {r.text}")
+            bot.reply_to(message, t("setfilament_fail"))
+            return
+
+        spool_id = r.json().get("id")
+        if not spool_id:
+            bot.reply_to(message, t("setfilament_fail"))
+            return
+
+        # Map slot to the new spool
+        mapping = load_spoolman_mapping()
+        mapping[slot_id] = spool_id
+        save_spoolman_mapping(mapping)
+
+        log.info(f"Created Spoolman spool {spool_id} ({brand} {material}) -> slot {slot_id}")
+        bot.reply_to(message, t("setfilament_ok", slot=slot_num))
+
+    except (ValueError, IndexError):
+        bot.reply_to(message, t("setfilament_usage"))
+    except Exception as e:
+        log.error(f"setfilament command error: {e}")
+        bot.reply_to(message, t("setfilament_fail"))
+
 @bot.message_handler(commands=['cam', 'snapshot'])
 def handle_cam(message):
     """Fetches and sends a live camera snapshot from Home Assistant."""
@@ -770,7 +850,7 @@ def on_message(client, userdata, msg):
             # Format weight for notification
             w_disp = f"{float(_state['print_weight']):.1f}g"
             
-            send_telegram(t("print_start", filename=filename or "–", weight=w_disp, eta=eta))
+            send_telegram_with_photo(t("print_start", filename=filename or "–", weight=w_disp, eta=eta))
 
         # Print finished
         elif gcode_state == "FINISH" and was_printing:
@@ -803,20 +883,20 @@ def on_message(client, userdata, msg):
 
             log.info(f"Print finished: {filename}")
             weight_str = f"{float(weight_used):.1f}g"
-            send_telegram(t("print_done", filename=filename or "–", weight=weight_str, duration=dur))
+            send_telegram_with_photo(t("print_done", filename=filename or "–", weight=weight_str, duration=dur))
 
         # Print failed / cancelled
         elif gcode_state in ("FAILED", "PAUSE") and was_printing and gcode_state == "FAILED":
             _state["printing"] = False
             log.info(f"Print failed: {filename}")
-            send_telegram(t("print_failed", filename=filename or "–"))
+            send_telegram_with_photo(t("print_failed", filename=filename or "–"))
 
         # Progress milestones 25 / 50 / 75
         elif gcode_state == "RUNNING" and was_printing:
             for milestone in (25, 50, 75):
                 if mc_percent >= milestone > _state["last_milestone"]:
                     _state["last_milestone"] = milestone
-                    send_telegram(t("progress", pct=milestone, remaining=_format_minutes(mc_remaining)))
+                    send_telegram_with_photo(t("progress", pct=milestone, remaining=_format_minutes(mc_remaining)))
                     break
 
         # Process AMS Slot data
@@ -826,21 +906,38 @@ def on_message(client, userdata, msg):
                 slot_id = tray.get("id")
                 if slot_id is None: continue
                 remain_pct = tray.get("remain", -1)
+                ftype  = tray.get("tray_type", "Unknown")
+                color  = tray.get("tray_color", "FFFFFF")
+                brand  = tray.get("tray_sub_brands", "")
 
                 _ams_state[str(slot_id)] = {
-                    "type": tray.get("tray_type", "Unknown"),
-                    "color": tray.get("tray_color", "FFFFFF"),
-                    "brand": tray.get("tray_sub_brands", ""),
-                    "remain": remain_pct
+                    "type": ftype, "color": color,
+                    "brand": brand, "remain": remain_pct
                 }
 
-                # Low Filament alert (only for native 10% Bambu spools for speed)
+                # ── New spool detection ──────────────────────
+                fingerprint = f"{color}:{ftype}"
+                prev_fp = _ams_fingerprints.get(str(slot_id))
+                if (fingerprint != "FFFFFF:Unknown"
+                        and fingerprint != ":"
+                        and prev_fp is not None
+                        and prev_fp != fingerprint):
+                    # Spool changed — notify user
+                    emoji = color_to_emoji(color)
+                    note = t("ams_new_filament",
+                             slot=int(slot_id)+1,
+                             emoji=emoji,
+                             ftype=ftype or "Unknown")
+                    send_telegram(note)
+                    log.info(f"New filament detected in slot {slot_id}: {fingerprint}")
+                _ams_fingerprints[str(slot_id)] = fingerprint
+
+                # ── Low Filament alert ───────────────────────
                 mapping = load_spoolman_mapping()
                 if str(slot_id) not in mapping:
                     check_grams = 9999
                     if 0 <= remain_pct <= 100:
                         check_grams = remain_pct * 10
-                    
                     if check_grams < 100:
                         if slot_id not in _alerted_slots:
                             send_telegram(t("low_filament", slot=int(slot_id)+1, grams=check_grams))
