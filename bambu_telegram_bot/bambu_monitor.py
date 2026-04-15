@@ -406,6 +406,7 @@ _state = {
     "print_weight": 0.0,
     "tray_now": 255,
     "_raw_print": {},  # Internal: Last raw print object for debugging
+    "spool_start_weight": None,   # Spoolman weight at print start (for filament estimate)
 }
 _ams_state = {}
 _ams_fingerprints = {}  # slot_id -> "color:type" string to detect new spool loads
@@ -431,12 +432,31 @@ def _finish_time(remaining_mins):
         return "–"
     try:
         from datetime import timezone, timedelta
-        # Jerusalem is UTC+3 (Israel Standard Time / IDT varies but +3 is safe for IL)
         jerusalem = timezone(timedelta(hours=3))
         finish = datetime.now(jerusalem) + timedelta(minutes=int(remaining_mins))
         return finish.strftime("%H:%M")
     except Exception:
         return "–"
+
+def _smart_remaining():
+    """Calculate remaining minutes more reliably.
+    Uses MQTT value if it looks valid, otherwise extrapolates from elapsed+percent."""
+    mqtt_rem = _state.get("mc_remaining_time", 0)
+    pct      = _state.get("mc_percent", 0)
+    start    = _state.get("start_time")
+
+    # If MQTT gives a non-zero value and we're not near the start, trust it
+    if mqtt_rem > 0:
+        return mqtt_rem
+
+    # Fallback: extrapolate from elapsed time and percentage
+    if start and pct and pct > 5:   # need at least 5% to extrapolate reliably
+        elapsed_mins = (datetime.now() - start).total_seconds() / 60.0
+        # total_est = elapsed / (pct/100), remaining = total_est - elapsed
+        remaining = elapsed_mins * (100 - pct) / pct
+        return max(0, remaining)
+
+    return 0
 
 def request_pushall():
     """Ask the printer to push its full current state over MQTT."""
@@ -532,35 +552,59 @@ def send_status(message):
         if _state["printing"]:
             filename = _state["filename"] or "Unknown"
             pct      = _state["mc_percent"]
-            
-            # Prioritize HA weight sensor if it returned a valid number
-            weight = ha_weight if ha_weight is not None else _state["print_weight"]
-            
-            # Use float formatting to ensure a decimal point (e.g. 0.0) and add single 'g'
-            try:
-                weight_str = f"{float(weight):.1f}g"
-            except:
-                weight_str = "Unknown"
-            
-            # Calculate Spoolman Remaining if active
+            tray     = _state.get("tray_now", 255)
+
+            # ── Weight (filament used estimate) ───────────────
+            weight_str = "N/A"
+
+            # 1) Best source: MQTT print_weight (if non-zero)
+            mqtt_w = _state.get("print_weight", 0.0)
+            if mqtt_w and float(mqtt_w) > 0:
+                weight_str = f"{float(mqtt_w):.1f}g"
+
+            # 2) HA weight sensor (configured or auto-discovered)
+            elif ha_weight is not None and ha_weight > 0:
+                weight_str = f"{ha_weight:.1f}g"
+
+            # 3) Estimate from Spoolman: start_weight - current_remaining
+            elif SPOOLMAN_URL and tray != 255:
+                mapping    = load_spoolman_mapping()
+                spool_id   = mapping.get(str(tray))
+                sw_start   = _state.get("spool_start_weight")
+                if spool_id and sw_start:
+                    try:
+                        r2 = requests.get(f"{SPOOLMAN_URL}/api/v1/spool/{spool_id}", timeout=5)
+                        if r2.status_code == 200:
+                            cur_rem = r2.json().get("remaining_weight")
+                            if cur_rem is not None:
+                                used = float(sw_start) - float(cur_rem)
+                                if used > 0:
+                                    weight_str = f"~{used:.1f}g"
+                    except Exception:
+                        pass
+
+            # ── Spool remaining ───────────────────────────────
             spool_rem_str = "N/A"
-            tray = _state.get("tray_now", 255)
             if SPOOLMAN_URL and tray != 255:
-                mapping = load_spoolman_mapping()
+                mapping  = load_spoolman_mapping()
                 spool_id = mapping.get(str(tray))
                 if spool_id:
                     try:
-                        r = requests.get(f"{SPOOLMAN_URL}/api/v1/spool/{spool_id}", timeout=5)
-                        if r.status_code == 200:
-                            s_data = r.json()
-                            rem = s_data.get("remaining_weight")
+                        r3 = requests.get(f"{SPOOLMAN_URL}/api/v1/spool/{spool_id}", timeout=5)
+                        if r3.status_code == 200:
+                            rem = r3.json().get("remaining_weight")
                             if rem is not None:
                                 spool_rem_str = f"{float(rem):.1f}g"
                     except Exception:
                         pass
 
-            eta = _format_minutes(_state["mc_remaining_time"])
-            res = t("status_printing", filename=filename, pct=pct, weight=weight_str, spool_rem=spool_rem_str, eta=eta, finish=_finish_time(_state["mc_remaining_time"]), light_status=light_str)
+            # ── Remaining time (smart: MQTT or extrapolated) ──
+            rem_mins = _smart_remaining()
+            eta      = _format_minutes(rem_mins)
+            finish   = _finish_time(rem_mins)
+
+            res = t("status_printing", filename=filename, pct=pct, weight=weight_str,
+                    spool_rem=spool_rem_str, eta=eta, finish=finish, light_status=light_str)
         else:
             res = t("status_idle", light_status=light_str)
     
@@ -1008,13 +1052,28 @@ def on_message(client, userdata, msg):
             _state["printing"]   = True
             _state["start_time"] = datetime.now()
             _state["last_milestone"] = 0
-            eta = _format_minutes(mc_remaining)
+            
+            # Optionally capture spool start weight
+            tray = _state.get("tray_now", 255)
+            if SPOOLMAN_URL and tray != 255:
+                mapping = load_spoolman_mapping()
+                spool_id = mapping.get(str(tray))
+                if spool_id:
+                    try:
+                        r = requests.get(f"{SPOOLMAN_URL}/api/v1/spool/{spool_id}", timeout=3)
+                        if r.status_code == 200:
+                            _state["spool_start_weight"] = r.json().get("remaining_weight")
+                    except Exception:
+                        pass
+                        
+            rem_mins = _smart_remaining()
+            eta = _format_minutes(rem_mins)
             log.info(f"Print started: {filename}")
             
             # Format weight for notification
             w_disp = f"{float(_state['print_weight']):.1f}g"
             
-            send_telegram_with_photo(t("print_start", filename=filename or "–", weight=w_disp, eta=eta, finish=_finish_time(mc_remaining)))
+            send_telegram_with_photo(t("print_start", filename=filename or "–", weight=w_disp, eta=eta, finish=_finish_time(rem_mins)))
 
         # Print finished
         elif gcode_state == "FINISH" and was_printing:
@@ -1076,7 +1135,8 @@ def on_message(client, userdata, msg):
             for milestone in (25, 50, 75):
                 if mc_percent >= milestone > _state["last_milestone"]:
                     _state["last_milestone"] = milestone
-                    send_telegram_with_photo(t("progress", pct=milestone, remaining=_format_minutes(mc_remaining), finish=_finish_time(mc_remaining)))
+                    rem_mins = _smart_remaining()
+                    send_telegram_with_photo(t("progress", pct=milestone, remaining=_format_minutes(rem_mins), finish=_finish_time(rem_mins)))
                     break
 
         # Process AMS Slot data
