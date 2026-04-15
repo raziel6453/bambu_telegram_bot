@@ -365,11 +365,10 @@ def discover_ha_weight_entity():
             for state in r.json():
                 eid  = state.get("entity_id", "")
                 sval = state.get("state", "")
-                # Must be a sensor, mention bambu, and contain 'weight' or 'filament'
+                # Look for entities ending in print_weight, or containing bambu+weight
                 if (eid.startswith("sensor.") 
-                        and "bambu" in eid.lower()
-                        and any(k in eid.lower() for k in ("weight", "filament"))
-                        and sval not in ("", "unknown", "unavailable")):
+                        and ("print_weight" in eid.lower() or ("bambu" in eid.lower() and "weight" in eid.lower()))
+                        and sval not in ("", "unknown", "unavailable", "None")):
                     _discovered_weight_entity = eid
                     log.info(f"Auto-discovered HA weight entity: {eid} = {sval}")
                     return eid
