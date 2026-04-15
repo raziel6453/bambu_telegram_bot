@@ -152,10 +152,10 @@ STRINGS = {
         "light_fail":     "❌ שגיאה בשליטה על המנורה: {error}",
         "light_no_entity": "❌ לא הוגדר גוף תאורה ולא נמצא גוף תאורה אוטומטי של Bambu ב-Home Assistant.",
         "ha_no_api":      "❌ הבוט לא רץ כ-Add-on עם הרשאות API של Home Assistant.",
-        "ams_new_filament": "🆕 חוט חדש זוהה בסלוט {slot}!\nצבע: {emoji} | סוג: {ftype}\n\nלרישום ב-Spoolman: /setfilament {slot} <מותג> <סוג>\nלדוגמא: /setfilament {slot} Bambu PLA",
+        "ams_new_filament": "🆕 חוט חדש זוהה בסלוט {slot}!\nצבע: {emoji} | סוג: {ftype}\n\nלרישום ב-Spoolman: /set {slot} <מותג> <סוג>\nלדוגמא: /set {slot} Bambu PLA",
         "setfilament_ok": "✅ ספול חדש נוצר ב-Spoolman ושויך לסלוט {slot}.",
         "setfilament_fail": "❌ שגיאה ביצירת ספול. ודא ש-Spoolman מוגדר.",
-        "setfilament_usage": "❌ שימוש: /setfilament <סלוט> <מותג> <סוג>\nלדוגמא: /setfilament 1 Bambu PLA"
+        "setfilament_usage": "❌ שימוש: /set <סלוט> <מותג> <סוג>\nלדוגמא: /set 1 Bambu PLA"
     },
     "en": {
         "print_start":    "🖨️ Print started!\nFile: {filename}\nWeight: {weight}\nETA: {eta}",
@@ -197,10 +197,10 @@ STRINGS = {
         "light_fail":     "❌ Error controlling the light: {error}",
         "light_no_entity": "❌ No light entity configured and no Bambu light discovered automatically in Home Assistant.",
         "ha_no_api":      "❌ Bot is not running as an Add-on with Home Assistant API access.",
-        "ams_new_filament": "🆕 New filament detected in Slot {slot}!\nColor: {emoji} | Type: {ftype}\n\nTo register in Spoolman: /setfilament {slot} <brand> <material>\nExample: /setfilament {slot} Bambu PLA",
+        "ams_new_filament": "🆕 New filament detected in Slot {slot}!\nColor: {emoji} | Type: {ftype}\n\nTo register in Spoolman: /set {slot} <brand> <material>\nExample: /set {slot} Bambu PLA",
         "setfilament_ok": "✅ New spool created in Spoolman and mapped to Slot {slot}.",
         "setfilament_fail": "❌ Failed to create spool. Make sure Spoolman is configured.",
-        "setfilament_usage": "❌ Usage: /setfilament <slot> <brand> <material>\nExample: /setfilament 1 Bambu PLA"
+        "setfilament_usage": "❌ Usage: /set <slot> <brand> <material>\nExample: /set 1 Bambu PLA"
     }
 }
 
@@ -618,8 +618,8 @@ def handle_map(message):
             pass
     bot.reply_to(message, t("spoolman_fail"))
 
-@bot.message_handler(commands=['setfilament'])
-def handle_setfilament(message):
+@bot.message_handler(commands=['set'])
+def handle_set(message):
     """Create a new spool in Spoolman and map it to an AMS slot."""
     if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
 
@@ -628,7 +628,7 @@ def handle_setfilament(message):
         return
 
     parts = message.text.strip().split(maxsplit=3)
-    # /setfilament <slot> <brand> <material>
+    # /set <slot> <brand> <material>
     if len(parts) < 4:
         bot.reply_to(message, t("setfilament_usage"))
         return
@@ -674,7 +674,7 @@ def handle_setfilament(message):
     except (ValueError, IndexError):
         bot.reply_to(message, t("setfilament_usage"))
     except Exception as e:
-        log.error(f"setfilament command error: {e}")
+        log.error(f"set command error: {e}")
         bot.reply_to(message, t("setfilament_fail"))
 
 @bot.message_handler(commands=['cam', 'snapshot'])
