@@ -548,10 +548,8 @@ def send_status(message):
 
             eta = _format_minutes(_state["mc_remaining_time"])
             res = t("status_printing", filename=filename, pct=pct, weight=weight_str, spool_rem=spool_rem_str, eta=eta, light_status=light_str)
-            res += f"\n\n<code>Ver: {VERSION}</code>"
         else:
             res = t("status_idle", light_status=light_str)
-            res += f"\n\n<code>Ver: {VERSION}</code>"
     
     # Try to add a snapshot if HA is available
     if HA_API_AVAILABLE:
