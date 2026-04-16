@@ -1,216 +1,258 @@
 #!/usr/bin/env python3
 """
-Bambu Lab Telegram Monitor for Home Assistant Add-on
-Sends print start/finish notifications, progress updates, and Spoolman filament tracking.
+Bambu Lab Telegram Monitor — Home Assistant Add-on
+Clean rewrite. Supports A1/P1/X1 via local or cloud MQTT.
 """
 
-import os, sys, time, json, threading, logging, requests, ssl, yaml, html
-from datetime import datetime
-VERSION = "2026-04-16.v2"
+import os, sys, json, html, ssl, socket, threading, logging, requests, yaml
+from datetime import datetime, timedelta, timezone
 
+VERSION = "2026-04-16.v3"
+
+# ── Dependencies ──────────────────────────────────────────────────────────────
 try:
     import paho.mqtt.client as mqtt
 except ImportError:
     sys.exit("Missing paho-mqtt. Run: pip install paho-mqtt")
-    
+
 try:
     import telebot
 except ImportError:
     sys.exit("Missing pyTelegramBotAPI. Run: pip install pyTelegramBotAPI")
 
-# ── Load config (Hybrid: HA Add-on or Standalone) ────────
-def load_config():
-    options_path = "/data/options.json"
-    local_config = "config.yaml"
-    local_options = "options.json"
 
-    # 1. Try HA Add-on path
-    if os.path.exists(options_path):
+# ── Config Loading ────────────────────────────────────────────────────────────
+def load_config():
+    # 1. HA Add-on path
+    if os.path.exists("/data/options.json"):
         try:
-            with open(options_path) as f:
+            with open("/data/options.json") as f:
                 return json.load(f), "/data"
         except Exception as e:
-            logging.error(f"Failed to load {options_path}: {e}")
+            print(f"Failed to load /data/options.json: {e}")
 
-    # 2. Try local config.yaml (standalone fallback)
-    if os.path.exists(local_config):
+    # 2. Local options.json
+    if os.path.exists("options.json"):
         try:
-            with open(local_config) as f:
+            with open("options.json") as f:
+                return json.load(f), "."
+        except Exception as e:
+            print(f"Failed to load options.json: {e}")
+
+    # 3. Local config.yaml (dev fallback)
+    if os.path.exists("config.yaml"):
+        try:
+            with open("config.yaml") as f:
                 cfg = yaml.safe_load(f)
                 if isinstance(cfg, dict) and "options" in cfg:
                     return cfg["options"], "."
         except Exception as e:
-            logging.error(f"Failed to load {local_config}: {e}")
-
-    # 3. Try local options.json (alternative standalone)
-    if os.path.exists(local_options):
-        try:
-            with open(local_options) as f:
-                return json.load(f), "."
-        except Exception as e:
-            logging.error(f"Failed to load {local_options}: {e}")
+            print(f"Failed to load config.yaml: {e}")
 
     return {}, "."
 
-options, data_dir = load_config()
-SPOOLMAN_MAPPING_FILE = os.path.join(data_dir, "spoolman_mapping.json")
 
-PRINTER_IP       = options.get("printer_ip", "")
-PRINTER_SERIAL   = options.get("printer_serial", "")
-PRINTER_PASSWORD = options.get("printer_password", "")
-BAMBU_USERNAME   = options.get("bambu_username", "")
-BAMBU_PASSWORD   = options.get("bambu_password", "")
-TELEGRAM_TOKEN   = options.get("telegram_token", "")
-TELEGRAM_CHAT_ID = options.get("telegram_chat_id", "")
+options, DATA_DIR = load_config()
+
+# ── Settings ──────────────────────────────────────────────────────────────────
+PRINTER_IP       = options.get("printer_ip", "").strip()
+PRINTER_SERIAL   = options.get("printer_serial", "").strip()
+PRINTER_PASSWORD = options.get("printer_password", "").strip()
+BAMBU_USERNAME   = options.get("bambu_username", "").strip()
+BAMBU_PASSWORD_  = options.get("bambu_password", "").strip()
+TELEGRAM_TOKEN   = options.get("telegram_token", "").strip()
+TELEGRAM_CHAT_ID = str(options.get("telegram_chat_id", "")).strip()
 LANGUAGE         = options.get("language", "he")
-SPOOLMAN_URL      = options.get("spoolman_url", "").strip().rstrip("/")
-HA_CAMERA_ENTITY  = options.get("ha_camera_entity", "").strip()
-HA_LIGHT_ENTITY   = options.get("ha_light_entity", "").strip()
-HA_WEIGHT_ENTITY  = options.get("ha_weight_entity", "").strip()
-LOW_STOCK_THRESHOLD = int(options.get("low_stock_threshold", 100))
-PRINT_HISTORY_FILE  = os.path.join(data_dir, "print_history.json")
+SPOOLMAN_URL     = options.get("spoolman_url", "").strip().rstrip("/")
+HA_CAMERA_ENTITY = options.get("ha_camera_entity", "").strip()
+HA_LIGHT_ENTITY  = options.get("ha_light_entity", "").strip()
+HA_WEIGHT_ENTITY = options.get("ha_weight_entity", "").strip()
+LOW_STOCK_THRESH = int(options.get("low_stock_threshold", 100))
 
-# Discovered weight entity (populated at runtime if not configured)
-_discovered_weight_entity = None
+SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
+HA_API           = "http://supervisor/core/api"
+HA_AVAILABLE     = bool(SUPERVISOR_TOKEN)
 
-SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN")
-HA_API_BASE      = "http://supervisor/core/api"
-HA_API_AVAILABLE = SUPERVISOR_TOKEN is not None
+SPOOLMAN_MAPPING_FILE = os.path.join(DATA_DIR, "spoolman_mapping.json")
+PRINT_HISTORY_FILE    = os.path.join(DATA_DIR, "print_history.json")
+STATE_FILE            = os.path.join(DATA_DIR, "persist_state.json")
 
-if "YOUR_" in PRINTER_IP or not PRINTER_IP:
-    if not options:
-        sys.exit("❌ Error: No configuration found. Please clarify if you are running as an HA Add-on or provide a config.yaml file.")
-    sys.exit("❌ Error: Please fill in the configuration with your printer and Telegram details.")
+JERUSALEM = timezone(timedelta(hours=3))
 
-# ── Logging ───────────────────────────────────────────────
+# ── Validation ────────────────────────────────────────────────────────────────
+if not options:
+    sys.exit("❌ No configuration found. Provide /data/options.json or config.yaml.")
+if not PRINTER_IP or "YOUR_" in PRINTER_IP:
+    sys.exit("❌ printer_ip not configured.")
+if not TELEGRAM_TOKEN or "YOUR_" in TELEGRAM_TOKEN:
+    sys.exit("❌ telegram_token not configured.")
+if not TELEGRAM_CHAT_ID or "YOUR_" in TELEGRAM_CHAT_ID:
+    sys.exit("❌ telegram_chat_id not configured.")
+
+# ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 log = logging.getLogger("bambu")
 
-# ── Spoolman Slot Mappings ────────────────────────────────
-def load_spoolman_mapping():
-    if os.path.exists(SPOOLMAN_MAPPING_FILE):
-        try:
-            with open(SPOOLMAN_MAPPING_FILE, 'r') as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
+log.info(f"=== Bambu Monitor {VERSION} ===")
+log.info(f"Printer IP: {PRINTER_IP} | Serial: {PRINTER_SERIAL}")
+log.info(f"Spoolman: {SPOOLMAN_URL or 'not configured'}")
+log.info(f"HA API: {'enabled' if HA_AVAILABLE else 'disabled'}")
+log.info(f"Language: {LANGUAGE}")
 
-def save_spoolman_mapping(data):
-    try:
-        with open(SPOOLMAN_MAPPING_FILE, 'w') as f:
-            json.dump(data, f)
-    except Exception as e:
-        log.error(f"Failed to save spoolman mapping: {e}")
-
-# ── Telegram Bot Init ─────────────────────────────────────
+# ── Telegram Init ─────────────────────────────────────────────────────────────
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-# ── Messages ──────────────────────────────────────────────
+
+# ── Localisation ─────────────────────────────────────────────────────────────
 STRINGS = {
     "he": {
-        "print_start":    "🖨️ ההדפסה התחילה!\nקובץ: {filename}\nמשקל צפוי: {weight}\nמשך משוער: {eta} (יגמר בסביבות {finish})\n",
-        "print_done":     "✅ ההדפסה הסתיימה!\nקובץ: {filename}\nמשקל חוט שהישתמש: {weight}\nסה\"כ זמן: {duration}",
-        "print_failed":   "❌ ההדפסה נכשלה.\nקובץ: {filename}",
-        "progress":       "📊 התקדמות: {pct}%\nנותר: {remaining} (יגמר בסביבות {finish})",
-        "low_filament":   "⚠️ נגמר חוט! סלוט {slot} נותר בערך: {grams}",
-        "connected":      "✅ הבוט מחובר ועובד!",
-        "disconnected":   "🔴 הפסקתי עבודה.",
-        "status_printing": "🖨️ מדפיס כעת...\nקובץ: {filename}\nמשקל צפוי להדפסה: {weight}\nנותר בספול: {spool_rem}\nהתקדמות: {pct}%\nזמן נותר: {eta}\n🏹 יגמר בסביבות: {finish}\n{light_status}",
-        "status_idle":    "💤 המדפסת כרגע במצב המתנה.\n{light_status}",
-        "ams_title":      "📦 סטטוס מערכת ה-AMS:\n",
-        "ams_slot":       "סלוט {slot}: {emoji} סוג: {type} ({brand}) - נותר משוער: {grams}\n",
-        "ams_spoolman_slot": "סלוט {slot}: {emoji} סוג: {brand} {material} - נותר: {grams} (Spoolman)\n",
-        "ams_spoolman_fail": "סלוט {slot}: ❌ שגיאת חיבור ל-Spoolman (ID {sid})\n",
-        "ams_empty":      "סלוט {slot}: ❌ ריק\n",
-        "spoolman_success": "✅ מאגר Spoolman ID {sid} שויך לסלוט {slot} בהצלחה. החסרה אוטומטית הופעלה.",
-        "spoolman_fail": "❌ שגיאה: יש להקליד במבנה: /spoolman <מזהה_ספול> <סלוט_1-4>",
-        "spoolman_not_enabled": "❌ Spoolman לא הוגדר בהגדרות Addon של Home Assistant.",
-        "spools_title":   "📦 מאגר Spoolman:\n",
-        "spools_item":    "ID: #{id} | {emoji} {brand} {material} | משקל נותר: {grams}\n",
-        "spools_empty":   "המאגר ריק.\n",
+        "connected":         "✅ הבוט מחובר ועובד!\nסדרתי: {serial}\nגרסה: {version}",
+        "mqtt_failed":       "❌ חיבור MQTT נכשל: {reason}",
+        "disconnected":      "🔴 הבוט הופסק.",
+        "print_start":       "🖨️ ההדפסה התחילה!\n📄 קובץ: {filename}\n⚖️ משקל צפוי: {weight}\n⏱️ ETA: {eta} | יסיים ב: {finish}",
+        "print_done":        "✅ ההדפסה הסתיימה!\n📄 קובץ: {filename}\n🧵 חוט שהשתמש: {weight}\n⏱️ סה\"כ זמן: {duration}",
+        "print_failed":      "❌ ההדפסה נכשלה.\n📄 קובץ: {filename}",
+        "print_paused":      "⏸️ ההדפסה הושהתה.\n📄 קובץ: {filename} | {pct}%",
+        "print_resumed":     "▶️ ההדפסה חזרה.\n📄 קובץ: {filename}",
+        "progress":          "📊 התקדמות: {pct}%\n⏱️ נותר: {remaining} | יסיים ב: {finish}",
+        "status_printing":   (
+            "🖨️ *מדפיס כעת...*\n"
+            "📄 קובץ: `{filename}`\n"
+            "⚖️ משקל צפוי: {weight}\n"
+            "🧵 נותר בספול: {spool_rem}\n"
+            "📊 התקדמות: {pct}%\n"
+            "⏱️ נותר: {eta}\n"
+            "🏁 יסיים ב: {finish}\n"
+            "{light}"
+        ),
+        "status_paused":     "⏸️ *ההדפסה מושהית*\n📄 קובץ: `{filename}`\n📊 {pct}%\n{light}",
+        "status_idle":       "💤 המדפסת במצב המתנה.\n{light}",
+        "ams_title":         "📦 *סטטוס AMS:*\n",
+        "ams_slot_spoolman": "סלוט {slot}: {emoji} {brand} {material} — {grams}g (Spoolman)\n",
+        "ams_slot_native":   "סלוט {slot}: {emoji} {ftype} ({brand}) — {grams}g\n",
+        "ams_slot_empty":    "סלוט {slot}: ❌ ריק\n",
+        "ams_no_data":       "❌ אין נתוני AMS עדיין.\nשלח /debug לבדוק חיבור MQTT.",
+        "spools_title":      "📦 *מלאי Spoolman:*\n",
+        "spools_item":       "#{id} | {emoji} {brand} {material} | {grams}g\n",
+        "spools_empty":      "המלאי ריק.",
+        "spoolman_mapped":   "✅ Spoolman ID {sid} שויך לסלוט {slot}.",
+        "spoolman_usage":    "❌ שימוש: /map <סלוט 1-4> <spoolman_id>",
+        "spoolman_no_url":   "❌ Spoolman לא הוגדר בהגדרות ה-Add-on.",
+        "set_ok":            "✅ ספול חדש נוצר ב-Spoolman ושויך לסלוט {slot}.",
+        "set_fail":          "❌ שגיאה ביצירת ספול.",
+        "set_usage":         "❌ שימוש: /set <סלוט> <מותג> <חומר>\nלדוגמא: /set 1 Bambu PLA",
+        "low_stock":         "⚠️ ספול #{sid} ({label}) על סיום — נותר {grams}g בלבד!",
+        "low_filament":      "⚠️ מעט חוט בסלוט {slot}! נותר ~{grams}g",
+        "history_title":     "🗒️ *היסטוריית הדפסות:*\n",
+        "history_item":      "📅 {date} | {filename} | {duration} | {grams}\n",
+        "history_empty":     "אין הדפסות שמורות.",
+        "cam_ok":            "📸 {time}",
+        "cam_no_entity":     "❌ לא נמצאה מצלמת Bambu ב-HA.",
+        "cam_error":         "❌ שגיאה במשיכת תמונה: {error}",
+        "ha_no_api":         "❌ הבוט לא רץ עם HA API.",
+        "light_on":          "💡 המנורה דולקת",
+        "light_off":         "🌑 המנורה כבויה",
+        "light_no_entity":   "❌ לא נמצא רכיב תאורה של Bambu.",
+        "light_error":       "❌ שגיאה בשליטה על המנורה: {error}",
+        "ctrl_pause":        "⏸️ שולח פקודת עצירה...",
+        "ctrl_resume":       "▶️ שולח פקודת המשך...",
+        "ctrl_cancel_ask":   "⚠️ בטוח שברצונך לבטל את ההדפסה?",
+        "ctrl_cancel_yes":   "❌ מבטל הדפסה...",
+        "ctrl_cancel_no":    "✅ ביטול בוטל — ההדפסה ממשיכת.",
+        "ctrl_not_printing": "❌ אין הדפסה פעילה כעת.",
         "help": (
             "🖨️ *Bambu Telegram Monitor — פקודות:*\n\n"
             "📊 *סטטוס*\n"
-            "/status — סטטוס נוכחי + צילום\n"
-            "/ams — סטטוס מגשי ה-AMS\n"
+            "/status — סטטוס נוכחי \\+ תמונה\n"
+            "/ams — מצב מגשי AMS\n"
             "/history — 10 הדפסות אחרונות\n\n"
             "🎥 *מצלמה*\n"
-            "/cam — צילום חי (מצריך HA)\n\n"
+            "/cam — צילום חי\n\n"
             "⚡ *שליטה מרחוק*\n"
             "/pause — עצירת הדפסה\n"
             "/resume — המשך הדפסה\n"
-            "/cancel — ביטול הדפסה (יבקש אישור)\n"
+            "/cancel — ביטול הדפסה \\(עם אישור\\)\n\n"
             "📦 *Spoolman*\n"
             "/spools — רשימת ספולים\n"
-            "/map <סלוט> <id> — שיוך סלוט לספולים קיים\n"
-            "/set <סלוט> <מותג> <סוג> — יצירת ספול חדש ושיוך אוטומטי\n\n"
+            "/map <סלוט> <id> — שיוך סלוט לספול\n"
+            "/set <סלוט> <מותג> <חומר> — ספול חדש \\+ שיוך\n\n"
             "🔦 *כלים*\n"
-            "/light — הדלקה/כיבוי מנורה\n"
+            "/light — הדלקה/כיבוי נורה\n"
             "/debug — נתוני MQTT גולמיים\n"
             "/help — תפריט זה"
         ),
-        "cam_error":      "❌ שגיאה במשיכת תמונה מ-Home Assistant: {error}",
-        "cam_no_entity":  "❌ לא הוגדרה מצלמה ולא נמצאה מצלמת Bambu אוטומטית ב-Home Assistant.",
-        "light_on":       "💡 המנורה דולקת",
-        "light_off":      "🌑 המנורה כבויה",
-        "light_fail":     "❌ שגיאה בשליטה על המנורה: {error}",
-        "light_no_entity": "❌ לא הוגדר גוף תאורה ולא נמצא גוף תאורה אוטומטי של Bambu ב-Home Assistant.",
-        "ha_no_api":      "❌ הבוט לא רץ כ-Add-on עם הרשאות API של Home Assistant.",
-        "ams_new_filament": "🆕 חוט חדש זוהה בסלוט {slot}!\nצבע: {emoji} | סוג: {ftype}\n\nלרישום ב-Spoolman: /set {slot} <מותג> <סוג>\nלדוגמא: /set {slot} Bambu PLA",
-        "setfilament_ok": "✅ ספול חדש נוצר ב-Spoolman ושויך לסלוט {slot}.",
-        "setfilament_fail": "❌ שגיאה ביצירת ספול. ודא ש-Spoolman מוגדר.",
-        "setfilament_usage": "❌ שימוש: /set <סלוט> <מותג> <סוג>\nלדוגמא: /set 1 Bambu PLA",
-        "ctrl_pause":     "⏸️ הפסקת הדפסה בבקשה...",
-        "ctrl_resume":    "▶️ המשך הדפסה בבקשה...",
-        "ctrl_cancel_confirm": "⚠️ בטוח שברצונך לבטל את ההדפסה?",
-        "ctrl_cancel_yes": "❌ מבטל את ההדפסה...",
-        "ctrl_cancel_no":  "✅ ביטול בוטל. הדפסה ממשיכת.",
-        "ctrl_not_printing": "❌ אין הדפסה פעילה כעת.",
-        "low_stock":      "⚠️ ספול #{sid} ({label}) על סיום — נותר רק {grams}g!",
-        "history_title":  "💻 היסטוריית הדפסות (10 אחרונות):\n",
-        "history_item":   "🗓 {date} | {filename} | {duration} | {grams}\n",
-        "history_empty":  "אין הדפסות שמורות שעד."
     },
     "en": {
-        "print_start":    "🖨️ Print started!\nFile: {filename}\nEst. filament: {weight}\nETA: {eta} (finishes at {finish})",
-        "print_done":     "✅ Print finished!\nFile: {filename}\nFilament used: {weight}\nTotal time: {duration}",
-        "print_failed":   "❌ Print failed.\nFile: {filename}",
-        "progress":       "📊 Progress: {pct}%\nRemaining: {remaining} (finishes at {finish})",
-        "low_filament":   "⚠️ Low filament! Slot {slot}: ~{grams} left",
-        "connected":      "✅ Bot connected and running!",
-        "disconnected":   "🔴 Bot stopped.",
-        "status_printing": "🖨️ Currently Printing...\nFile: {filename}\nEst. filament: {weight}\nSpool remaining: {spool_rem}\nProgress: {pct}%\nTime remaining: {eta}\n🏹 Finishes at: {finish}\n{light_status}",
-        "status_idle":    "💤 Printer is currently idle.\n{light_status}",
-        "ams_title":      "📦 AMS Status:\n",
-        "ams_slot":       "Slot {slot}: {emoji} Type: {type} ({brand}) - Estimated: {grams}\n",
-        "ams_spoolman_slot": "Slot {slot}: {emoji} Type: {brand} {material} - Remaining: {grams} (Spoolman)\n",
-        "ams_spoolman_fail": "Slot {slot}: ❌ Spoolman Connection Error (ID {sid})\n",
-        "ams_empty":      "Slot {slot}: ❌ Empty\n",
-        "spoolman_success": "✅ Spoolman ID {sid} mapped to Slot {slot}. Auto-subtraction enabled.",
-        "spoolman_fail": "❌ Error: Use format: /spoolman <spool_id> <slot_1-4>",
-        "spoolman_not_enabled": "❌ Spoolman URL is not configured in Home Assistant Add-on options.",
-        "spools_title":   "📦 Spoolman Inventory:\n",
-        "spools_item":    "ID: #{id} | {emoji} {brand} {material} | Weight: {grams}\n",
-        "spools_empty":   "Inventory is empty.\n",
+        "connected":         "✅ Bot connected and running!\nSerial: {serial}\nVersion: {version}",
+        "mqtt_failed":       "❌ MQTT connection failed: {reason}",
+        "disconnected":      "🔴 Bot stopped.",
+        "print_start":       "🖨️ Print started!\n📄 File: {filename}\n⚖️ Est. filament: {weight}\n⏱️ ETA: {eta} | Finishes at: {finish}",
+        "print_done":        "✅ Print finished!\n📄 File: {filename}\n🧵 Filament used: {weight}\n⏱️ Total time: {duration}",
+        "print_failed":      "❌ Print failed.\n📄 File: {filename}",
+        "print_paused":      "⏸️ Print paused.\n📄 File: {filename} | {pct}%",
+        "print_resumed":     "▶️ Print resumed.\n📄 File: {filename}",
+        "progress":          "📊 Progress: {pct}%\n⏱️ Remaining: {remaining} | Finishes at: {finish}",
+        "status_printing":   (
+            "🖨️ *Currently Printing...*\n"
+            "📄 File: `{filename}`\n"
+            "⚖️ Est. filament: {weight}\n"
+            "🧵 Spool remaining: {spool_rem}\n"
+            "📊 Progress: {pct}%\n"
+            "⏱️ Remaining: {eta}\n"
+            "🏁 Finishes at: {finish}\n"
+            "{light}"
+        ),
+        "status_paused":     "⏸️ *Print is paused*\n📄 File: `{filename}`\n📊 {pct}%\n{light}",
+        "status_idle":       "💤 Printer is idle.\n{light}",
+        "ams_title":         "📦 *AMS Status:*\n",
+        "ams_slot_spoolman": "Slot {slot}: {emoji} {brand} {material} — {grams}g (Spoolman)\n",
+        "ams_slot_native":   "Slot {slot}: {emoji} {ftype} ({brand}) — {grams}g\n",
+        "ams_slot_empty":    "Slot {slot}: ❌ Empty\n",
+        "ams_no_data":       "❌ No AMS data yet.\nSend /debug to check MQTT connection.",
+        "spools_title":      "📦 *Spoolman Inventory:*\n",
+        "spools_item":       "#{id} | {emoji} {brand} {material} | {grams}g remaining\n",
+        "spools_empty":      "Inventory is empty.",
+        "spoolman_mapped":   "✅ Spoolman ID {sid} mapped to Slot {slot}.",
+        "spoolman_usage":    "❌ Usage: /map <slot 1-4> <spoolman_id>",
+        "spoolman_no_url":   "❌ Spoolman is not configured in Add-on settings.",
+        "set_ok":            "✅ New spool created in Spoolman and mapped to Slot {slot}.",
+        "set_fail":          "❌ Failed to create spool.",
+        "set_usage":         "❌ Usage: /set <slot> <brand> <material>\nExample: /set 1 Bambu PLA",
+        "low_stock":         "⚠️ Spool #{sid} ({label}) is running low — only {grams}g left!",
+        "low_filament":      "⚠️ Low filament in Slot {slot}! ~{grams}g remaining",
+        "history_title":     "🗒️ *Print History:*\n",
+        "history_item":      "📅 {date} | {filename} | {duration} | {grams}\n",
+        "history_empty":     "No prints saved yet.",
+        "cam_ok":            "📸 {time}",
+        "cam_no_entity":     "❌ No Bambu camera found in Home Assistant.",
+        "cam_error":         "❌ Error fetching snapshot: {error}",
+        "ha_no_api":         "❌ Bot is not running with HA API access.",
+        "light_on":          "💡 Light is ON",
+        "light_off":         "🌑 Light is OFF",
+        "light_no_entity":   "❌ No Bambu light entity found in Home Assistant.",
+        "light_error":       "❌ Error controlling light: {error}",
+        "ctrl_pause":        "⏸️ Sending pause command...",
+        "ctrl_resume":       "▶️ Sending resume command...",
+        "ctrl_cancel_ask":   "⚠️ Are you sure you want to cancel the print?",
+        "ctrl_cancel_yes":   "❌ Cancelling print...",
+        "ctrl_cancel_no":    "✅ Cancel aborted — print continues.",
+        "ctrl_not_printing": "❌ No print is currently active.",
         "help": (
             "🖨️ *Bambu Telegram Monitor — Commands:*\n\n"
             "📊 *Status*\n"
-            "/status — Current status + camera snapshot\n"
+            "/status — Current status \\+ camera snapshot\n"
             "/ams — AMS slot status\n"
             "/history — Last 10 completed prints\n\n"
             "🎥 *Camera*\n"
-            "/cam — Live snapshot (requires HA)\n\n"
+            "/cam — Live snapshot \\(requires HA\\)\n\n"
             "⚡ *Remote Control*\n"
             "/pause — Pause current print\n"
             "/resume — Resume paused print\n"
-            "/cancel — Cancel print (asks confirmation)\n"
+            "/cancel — Cancel print \\(asks confirmation\\)\n\n"
             "📦 *Spoolman*\n"
             "/spools — List inventory\n"
             "/map <slot> <id> — Map slot to existing spool\n"
@@ -220,820 +262,525 @@ STRINGS = {
             "/debug — Raw MQTT data for troubleshooting\n"
             "/help — Show this menu"
         ),
-        "cam_error":      "❌ Error fetching snapshot from Home Assistant: {error}",
-        "cam_no_entity":  "❌ No camera entity configured and no Bambu camera discovered autoamtically in Home Assistant.",
-        "light_on":       "💡 Light is ON",
-        "light_off":      "🌑 Light is OFF",
-        "light_fail":     "❌ Error controlling the light: {error}",
-        "light_no_entity": "❌ No light entity configured and no Bambu light discovered automatically in Home Assistant.",
-        "ha_no_api":      "❌ Bot is not running as an Add-on with Home Assistant API access.",
-        "ams_new_filament": "🆕 New filament detected in Slot {slot}!\nColor: {emoji} | Type: {ftype}\n\nTo register in Spoolman: /set {slot} <brand> <material>\nExample: /set {slot} Bambu PLA",
-        "setfilament_ok": "✅ New spool created in Spoolman and mapped to Slot {slot}.",
-        "setfilament_fail": "❌ Failed to create spool. Make sure Spoolman is configured.",
-        "setfilament_usage": "❌ Usage: /set <slot> <brand> <material>\nExample: /set 1 Bambu PLA",
-        "ctrl_pause":     "⏸️ Pausing print...",
-        "ctrl_resume":    "▶️ Resuming print...",
-        "ctrl_cancel_confirm": "⚠️ Are you sure you want to cancel the print?",
-        "ctrl_cancel_yes": "❌ Cancelling print...",
-        "ctrl_cancel_no":  "✅ Cancel aborted. Print continues.",
-        "ctrl_not_printing": "❌ No print is currently active.",
-        "low_stock":      "⚠️ Spool #{sid} ({label}) is running low — only {grams}g left!",
-        "history_title":  "💻 Print History (last 10):\n",
-        "history_item":   "🗓 {date} | {filename} | {duration} | {grams}\n",
-        "history_empty":  "No prints saved yet."
-    }
+    },
 }
+
 
 def t(key, **kwargs):
     tmpl = STRINGS.get(LANGUAGE, STRINGS["en"]).get(key, key)
-    return tmpl.format(**kwargs)
-
-def color_to_emoji(hexcode):
-    if not hexcode or len(hexcode) < 6: return "🧵"
-    hexcode = hexcode.replace("#", "")
     try:
-        r, g, b = int(hexcode[0:2], 16), int(hexcode[2:4], 16), int(hexcode[4:6], 16)
+        return tmpl.format(**kwargs)
+    except Exception:
+        return tmpl
+
+
+# ── Utility ───────────────────────────────────────────────────────────────────
+def color_to_emoji(hexcode: str) -> str:
+    if not hexcode or len(hexcode) < 6:
+        return "🧵"
+    h = hexcode.replace("#", "")[:6]
+    try:
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
         if r > 200 and g > 200 and b > 200: return "⚪"
-        if r < 50 and g < 50 and b < 50: return "⚫"
-        if r > 200 and g < 100 and b < 100: return "🔴"
-        if r < 100 and g > 200 and b < 100: return "🟢"
-        if r < 100 and g < 100 and b > 200: return "🔵"
-        if r > 200 and g > 200 and b < 100: return "🟡"
-        if r > 200 and g > 100 and b < 100: return "🟠"
+        if r < 50  and g < 50  and b < 50:  return "⚫"
+        if r > 180 and g < 80  and b < 80:  return "🔴"
+        if r < 80  and g > 180 and b < 80:  return "🟢"
+        if r < 80  and g < 80  and b > 180: return "🔵"
+        if r > 180 and g > 180 and b < 80:  return "🟡"
+        if r > 180 and g > 100 and b < 80:  return "🟠"
+        if r > 100 and g < 80  and b > 100: return "🟣"
     except Exception:
         pass
     return "🧵"
 
-# ── Telegram helpers ──────────────────────────────────────
-def send_telegram(text):
+
+def fmt_mins(mins: int) -> str:
+    if mins <= 0:
+        return "–"
+    h, m = divmod(int(mins), 60)
+    return f"{h}h {m}m" if h else f"{m}m"
+
+
+def fmt_duration(secs: float) -> str:
+    h, rem = divmod(int(secs), 3600)
+    m = rem // 60
+    return f"{h}h {m}m" if h else f"{m}m"
+
+
+def finish_time(remaining_mins: int) -> str:
+    """Returns HH:MM finish time in Jerusalem timezone."""
+    # Priority 1: HA end_time sensor
+    if HA_AVAILABLE:
+        we = _ha_weight_entity()
+        if we and "_print_weight" in we:
+            prefix = we.replace("_print_weight", "")
+            raw = _ha_sensor(f"{prefix}_end_time")
+            if raw and "T" in str(raw):
+                try:
+                    dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                    return dt.astimezone(JERUSALEM).strftime("%H:%M")
+                except Exception:
+                    pass
+    if remaining_mins <= 0:
+        return "–"
+    return (datetime.now(JERUSALEM) + timedelta(minutes=remaining_mins)).strftime("%H:%M")
+
+
+# ── JSON Persistence ──────────────────────────────────────────────────────────
+def _load_json(path, default):
     try:
-        bot.send_message(TELEGRAM_CHAT_ID, text)
+        if os.path.exists(path):
+            with open(path) as f:
+                return json.load(f)
     except Exception as e:
-        log.error(f"Telegram send failed: {e}")
+        log.error(f"Failed to load {path}: {e}")
+    return default
 
-def send_telegram_with_photo(text):
-    """Send a message with a live camera snapshot if available, else plain text."""
-    if HA_API_AVAILABLE:
-        try:
-            img_bytes, _ = get_ha_snapshot(HA_CAMERA_ENTITY)
-            if img_bytes:
-                bot.send_photo(TELEGRAM_CHAT_ID, img_bytes, caption=text)
-                return
-        except Exception as e:
-            log.warning(f"Photo send failed, falling back to text: {e}")
-    send_telegram(text)
 
-def get_ha_snapshot(entity_id=None):
-    """Fetches a camera snapshot from Home Assistant via the Supervisor API."""
-    if not SUPERVISOR_TOKEN:
-        return None, t("ha_no_api")
-    
-    headers = {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
-    
-    if not entity_id:
-        # Try auto-discovery by looking for camera entities with 'bambu' in their ID
-        try:
-            r = requests.get(f"{HA_API_BASE}/states", headers=headers, timeout=10)
-            if r.status_code == 200:
-                states = r.json()
-                for state in states:
-                    eid = state.get("entity_id", "")
-                    if eid.startswith("camera.") and "bambu" in eid.lower():
-                        entity_id = eid
-                        log.info(f"Auto-discovered camera: {entity_id}")
-                        break
-        except Exception as e:
-            log.error(f"HA state discovery failed: {e}")
-            
-    if not entity_id:
-        return None, t("cam_no_entity")
-
+def _save_json(path, data):
     try:
-        url = f"{HA_API_BASE}/camera_proxy/{entity_id}"
-        r = requests.get(url, headers=headers, timeout=15)
+        with open(path, "w") as f:
+            json.dump(data, f, default=str)
+    except Exception as e:
+        log.error(f"Failed to save {path}: {e}")
+
+
+def load_mapping():
+    return _load_json(SPOOLMAN_MAPPING_FILE, {})
+
+
+def save_mapping(m):
+    _save_json(SPOOLMAN_MAPPING_FILE, m)
+
+
+# ── HA Integration ────────────────────────────────────────────────────────────
+_discovered = {}  # cache: "camera", "light", "weight"
+
+
+def _ha_headers():
+    return {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
+
+
+def _ha_all_states():
+    try:
+        r = requests.get(f"{HA_API}/states", headers=_ha_headers(), timeout=10)
+        if r.status_code == 200:
+            return r.json()
+    except Exception as e:
+        log.error(f"HA states fetch failed: {e}")
+    return []
+
+
+def _ha_sensor(entity_id: str):
+    """Returns state string of an HA entity, or None if unavailable."""
+    if not HA_AVAILABLE or not entity_id:
+        return None
+    try:
+        r = requests.get(f"{HA_API}/states/{entity_id}", headers=_ha_headers(), timeout=5)
+        if r.status_code == 200:
+            val = r.json().get("state", "")
+            if val not in ("unknown", "unavailable", "None", "none", ""):
+                return val
+    except Exception:
+        pass
+    return None
+
+
+def _ha_discover(domain: str, keywords: list):
+    """Find a HA entity matching domain + any keyword in entity name."""
+    for state in _ha_all_states():
+        eid = state.get("entity_id", "")
+        if not eid.startswith(f"{domain}."):
+            continue
+        name = eid.lower()
+        if "bambu" in name and any(k in name for k in keywords):
+            log.info(f"Auto-discovered {domain}: {eid}")
+            return eid
+    return None
+
+
+def _ha_camera_entity():
+    if HA_CAMERA_ENTITY:
+        return HA_CAMERA_ENTITY
+    if "camera" not in _discovered:
+        _discovered["camera"] = _ha_discover("camera", ["bambu", "camera"])
+    return _discovered.get("camera")
+
+
+def _ha_light_entity():
+    if HA_LIGHT_ENTITY:
+        return HA_LIGHT_ENTITY
+    if "light" not in _discovered:
+        _discovered["light"] = _ha_discover("light", ["lamp", "light", "chamber"])
+    return _discovered.get("light")
+
+
+def _ha_weight_entity():
+    if HA_WEIGHT_ENTITY:
+        return HA_WEIGHT_ENTITY
+    if "weight" not in _discovered:
+        for state in _ha_all_states():
+            eid  = state.get("entity_id", "")
+            sval = state.get("state", "")
+            if (eid.startswith("sensor.")
+                    and ("print_weight" in eid.lower() or ("bambu" in eid.lower() and "weight" in eid.lower()))
+                    and sval not in ("", "unknown", "unavailable", "None")):
+                log.info(f"Auto-discovered weight entity: {eid}")
+                _discovered["weight"] = eid
+                break
+    return _discovered.get("weight")
+
+
+def ha_snapshot():
+    """Returns (bytes_or_None, error_str_or_None)."""
+    if not HA_AVAILABLE:
+        return None, t("ha_no_api")
+    cam = _ha_camera_entity()
+    if not cam:
+        return None, t("cam_no_entity")
+    try:
+        r = requests.get(f"{HA_API}/camera_proxy/{cam}", headers=_ha_headers(), timeout=15)
         if r.status_code == 200:
             return r.content, None
         return None, t("cam_error", error=f"HTTP {r.status_code}")
     except Exception as e:
         return None, t("cam_error", error=str(e))
 
-def get_ha_light_state(entity_id=None):
-    """Fetches the current state of a light entity from Home Assistant."""
-    if not SUPERVISOR_TOKEN:
-        return None, None
-    
-    headers = {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
-    
-    if not entity_id:
-        # Auto-discover light entity
-        try:
-            r = requests.get(f"{HA_API_BASE}/states", headers=headers, timeout=10)
-            if r.status_code == 200:
-                states = r.json()
-                for state in states:
-                    eid = state.get("entity_id", "")
-                    # Look for light domain containing 'bambu' and 'lamp' or 'light'
-                    if eid.startswith("light.") and "bambu" in eid.lower() and ("lamp" in eid.lower() or "light" in eid.lower()):
-                        entity_id = eid
-                        log.info(f"Auto-discovered light: {entity_id}")
-                        break
-        except Exception as e:
-            log.error(f"HA state discovery failed: {e}")
-            
-    if not entity_id:
-        return None, None
 
+def ha_light_state():
+    """Returns (state_str, entity_id)."""
+    eid = _ha_light_entity()
+    if not eid or not HA_AVAILABLE:
+        return None, None
     try:
-        r = requests.get(f"{HA_API_BASE}/states/{entity_id}", headers=headers, timeout=10)
+        r = requests.get(f"{HA_API}/states/{eid}", headers=_ha_headers(), timeout=5)
         if r.status_code == 200:
-            return r.json().get("state"), entity_id
+            return r.json().get("state"), eid
     except Exception:
         pass
-    return None, entity_id
+    return None, eid
 
-def get_ha_sensor_state(entity_id):
-    """Fetches the state of a specific sensor from HA."""
-    if not SUPERVISOR_TOKEN or not entity_id:
-        return None
-    headers = {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
-    try:
-        r = requests.get(f"{HA_API_BASE}/states/{entity_id}", headers=headers, timeout=5)
-        if r.status_code == 200:
-            val = r.json().get("state")
-            if val not in ("unknown", "unavailable", "None", ""):
-                return val
-    except Exception as e:
-        log.error(f"Failed to fetch {entity_id} from HA: {e}")
-    return None
 
-def discover_ha_weight_entity():
-    """Scan HA entities to find a Bambu weight sensor automatically."""
-    global _discovered_weight_entity
-    if not SUPERVISOR_TOKEN:
-        return None
-    if _discovered_weight_entity:
-        return _discovered_weight_entity
-    headers = {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
-    try:
-        r = requests.get(f"{HA_API_BASE}/states", headers=headers, timeout=10)
-        if r.status_code == 200:
-            for state in r.json():
-                eid  = state.get("entity_id", "")
-                sval = state.get("state", "")
-                # Look for entities ending in print_weight, or containing bambu+weight
-                if (eid.startswith("sensor.") 
-                        and ("print_weight" in eid.lower() or ("bambu" in eid.lower() and "weight" in eid.lower()))
-                        and sval not in ("", "unknown", "unavailable", "None")):
-                    _discovered_weight_entity = eid
-                    log.info(f"Auto-discovered HA weight entity: {eid} = {sval}")
-                    return eid
-    except Exception as e:
-        log.error(f"Weight entity discovery failed: {e}")
-    return None
-
-def set_ha_light_state(entity_id, state):
-    """Turns a light entity on or off."""
-    if not SUPERVISOR_TOKEN:
-        return t("ha_no_api")
-    
+def ha_light_set(entity_id: str, state: str):
+    """Returns error string or None on success."""
     service = "turn_on" if state == "on" else "turn_off"
-    headers = {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
-    
     try:
-        r = requests.post(f"{HA_API_BASE}/services/light/{service}", 
-                          headers=headers, json={"entity_id": entity_id}, timeout=10)
-        if r.status_code in (200, 201):
-            return None
-        return f"HTTP {r.status_code}"
+        r = requests.post(
+            f"{HA_API}/services/light/{service}",
+            headers=_ha_headers(),
+            json={"entity_id": entity_id},
+            timeout=10,
+        )
+        return None if r.status_code in (200, 201) else f"HTTP {r.status_code}"
     except Exception as e:
         return str(e)
 
-# ── State ─────────────────────────────────────────────────
-_state = {
-    "printing": False,
-    "filename": "",
-    "start_time": None,
-    "mc_percent": 0,
-    "mc_remaining_time": 0,
-    "last_milestone": 0,
-    "gcode_state": "",
-    "print_weight": 0.0,
-    "tray_now": 255,
-    "_raw_print": {},  # Internal: Last raw print object for debugging
-    "spool_start_weight": None,   # Spoolman weight at print start (for filament estimate)
-}
-_ams_state = {}
-_ams_fingerprints = {}  # slot_id -> "color:type" string to detect new spool loads
-_alerted_slots = set()
-_lock = threading.Lock()
-_mqtt_client = None          # set in main() after connection
-_status_refresh = threading.Event()  # signals that fresh data arrived
 
-def _format_minutes(mins):
-    if mins <= 0:
-        return "–"
-    h, m = divmod(int(mins), 60)
-    return f"{h}h {m}m" if h else f"{m}m"
+# ── Smart Remaining Time ──────────────────────────────────────────────────────
+def smart_remaining() -> int:
+    """Returns best estimate of remaining minutes."""
+    # Priority 1: HA remaining_time sensor
+    if HA_AVAILABLE:
+        we = _ha_weight_entity()
+        if we and "_print_weight" in we:
+            prefix = we.replace("_print_weight", "")
+            raw = _ha_sensor(f"{prefix}_remaining_time")
+            if raw and str(raw).isdigit():
+                return int(raw)
 
-def _format_duration(seconds):
-    h, rem = divmod(int(seconds), 3600)
-    m = rem // 60
-    return f"{h}h {m}m" if h else f"{m}m"
-
-
-def _smart_remaining():
-    """Calculate remaining minutes using HA sensors or mathematical extrapolation."""
-    # 1. Supreme Priority: Direct Home Assistant Sensor (if available)
-    if HA_API_AVAILABLE and SUPERVISOR_TOKEN:
-        weight_entity = HA_WEIGHT_ENTITY or _discovered_weight_entity
-        if weight_entity and "_print_weight" in weight_entity:
-            ha_prefix = weight_entity.replace("_print_weight", "")
-            raw_rem = get_ha_sensor_state(f"{ha_prefix}_remaining_time")
-            if raw_rem and str(raw_rem).isdigit():
-                return int(raw_rem)
-
-    # 2. Primary: Mathematical Extrapolation
-    mqtt_rem = _state.get("mc_remaining_time", 0)
-    pct      = _state.get("mc_percent", 0)
-    start    = _state.get("start_time")
-
+    # Priority 2: Mathematical extrapolation
+    pct   = _state["mc_percent"]
+    start = _state["start_time"]
     if start and pct and pct > 5:
-        elapsed_mins = (datetime.now() - start).total_seconds() / 60.0
-        remaining = elapsed_mins * (100 - pct) / pct
+        elapsed   = (datetime.now() - start).total_seconds() / 60.0
+        remaining = elapsed * (100 - pct) / pct
         return max(0, int(remaining))
 
-    # 3. Fallback: Trust the MQTT value early in the print
-    if mqtt_rem > 0:
-        return mqtt_rem
+    # Priority 3: MQTT reported value
+    return max(0, _state["mc_remaining_time"])
 
-    return 0
 
-def _finish_time(remaining_mins):
-    """Calculates exactly when the print will finish."""
-    # 1. Supreme Priority: Direct Home Assistant Sensor (if available)
-    if HA_API_AVAILABLE and SUPERVISOR_TOKEN:
-        weight_entity = HA_WEIGHT_ENTITY or _discovered_weight_entity
-        if weight_entity and "_print_weight" in weight_entity:
-            ha_prefix = weight_entity.replace("_print_weight", "")
-            raw_end = get_ha_sensor_state(f"{ha_prefix}_end_time")
-            if raw_end and "T" in str(raw_end):
-                try:
-                    from datetime import timezone, timedelta
-                    jerusalem = timezone(timedelta(hours=3))
-                    dt = datetime.fromisoformat(str(raw_end).replace('Z', '+00:00'))
-                    return dt.astimezone(jerusalem).strftime("%H:%M")
-                except Exception:
-                    pass
+# ── State ─────────────────────────────────────────────────────────────────────
+_state = {
+    "printing":           False,
+    "gcode_state":        "",
+    "filename":           "",
+    "start_time":         None,
+    "mc_percent":         0,
+    "mc_remaining_time":  0,
+    "last_milestone":     0,
+    "print_weight":       0.0,
+    "tray_now":           255,
+    "spool_start_weight": None,
+    "_raw_print":         {},
+}
+_ams_state     = {}       # slot_id (str "0"–"3") -> {type, color, brand, remain}
+_alerted_slots = set()
+_lock          = threading.Lock()
+_mqtt_client   = None
+_status_event  = threading.Event()
 
-    # 2. Local Fallback
-    if remaining_mins <= 0:
-        return "–"
-    try:
-        from datetime import timezone, timedelta
-        jerusalem = timezone(timedelta(hours=3))
-        finish = datetime.now(jerusalem) + timedelta(minutes=int(remaining_mins))
-        return finish.strftime("%H:%M")
-    except Exception:
-        return "–"
 
-def request_pushall():
-    """Ask the printer to push its full current state over MQTT."""
-    global _mqtt_client
-    if _mqtt_client is None:
+def _restore_state():
+    saved = _load_json(STATE_FILE, {})
+    if not saved:
         return
-    topic   = f"device/{PRINTER_SERIAL}/request"
-    payload = json.dumps({"pushing": {"sequence_id": "0", "command": "pushall"}})
-    try:
-        _mqtt_client.publish(topic, payload)
-        log.info("Sent pushall request to printer")
-    except Exception as e:
-        log.error(f"pushall publish failed: {e}")
+    for key in ("printing", "gcode_state", "filename", "mc_percent",
+                "mc_remaining_time", "last_milestone", "print_weight",
+                "tray_now", "spool_start_weight"):
+        if key in saved:
+            _state[key] = saved[key]
+    if saved.get("start_time"):
+        try:
+            _state["start_time"] = datetime.fromisoformat(saved["start_time"])
+        except Exception:
+            pass
+    log.info(f"Restored state: printing={_state['printing']} gcode={_state['gcode_state']} pct={_state['mc_percent']}")
 
-def send_printer_command(cmd_dict):
-    """Publish a print control command to the printer via MQTT."""
-    global _mqtt_client
-    if _mqtt_client is None:
-        log.warning("Cannot send command: MQTT not connected")
-        return False
-    topic   = f"device/{PRINTER_SERIAL}/request"
-    payload = json.dumps({"print": {"sequence_id": "0", **cmd_dict}})
+
+def _persist_state():
+    _save_json(STATE_FILE, {
+        "printing":           _state["printing"],
+        "gcode_state":        _state["gcode_state"],
+        "filename":           _state["filename"],
+        "mc_percent":         _state["mc_percent"],
+        "mc_remaining_time":  _state["mc_remaining_time"],
+        "last_milestone":     _state["last_milestone"],
+        "print_weight":       _state["print_weight"],
+        "tray_now":           _state["tray_now"],
+        "spool_start_weight": _state["spool_start_weight"],
+        "start_time":         _state["start_time"].isoformat() if _state["start_time"] else None,
+    })
+
+
+# ── Telegram Helpers ──────────────────────────────────────────────────────────
+def tg_send(text: str):
     try:
-        _mqtt_client.publish(topic, payload)
-        log.info(f"Sent printer command: {cmd_dict}")
+        bot.send_message(TELEGRAM_CHAT_ID, text)
+    except Exception as e:
+        log.error(f"Telegram send failed: {e}")
+
+
+def tg_photo(text: str):
+    """Send message with HA camera snapshot, falling back to plain text."""
+    if HA_AVAILABLE:
+        try:
+            img, _ = ha_snapshot()
+            if img:
+                bot.send_photo(TELEGRAM_CHAT_ID, img, caption=text)
+                return
+        except Exception as e:
+            log.warning(f"Photo send failed, falling back to text: {e}")
+    tg_send(text)
+
+
+def chat_ok(message) -> bool:
+    return str(message.chat.id) == TELEGRAM_CHAT_ID
+
+
+# ── Spoolman ──────────────────────────────────────────────────────────────────
+def _spoolman_get(path: str, timeout=5):
+    if not SPOOLMAN_URL:
+        return None
+    try:
+        r = requests.get(f"{SPOOLMAN_URL}{path}", timeout=timeout)
+        if r.status_code == 200:
+            return r.json()
+    except Exception as e:
+        log.error(f"Spoolman GET {path}: {e}")
+    return None
+
+
+def _spoolman_put(path: str, data: dict, timeout=10):
+    if not SPOOLMAN_URL:
+        return False
+    try:
+        r = requests.put(f"{SPOOLMAN_URL}{path}", json=data, timeout=timeout)
+        return r.status_code in (200, 201)
+    except Exception as e:
+        log.error(f"Spoolman PUT {path}: {e}")
+    return False
+
+
+def _spoolman_post(path: str, data: dict, timeout=10):
+    if not SPOOLMAN_URL:
+        return None
+    try:
+        r = requests.post(f"{SPOOLMAN_URL}{path}", json=data, timeout=timeout)
+        if r.status_code in (200, 201):
+            return r.json()
+    except Exception as e:
+        log.error(f"Spoolman POST {path}: {e}")
+    return None
+
+
+def _check_low_stock(spool_id):
+    data = _spoolman_get(f"/api/v1/spool/{spool_id}")
+    if not data:
+        return
+    rem = data.get("remaining_weight", 9999)
+    if rem < LOW_STOCK_THRESH:
+        fil   = data.get("filament", {})
+        label = f"{fil.get('vendor', {}).get('name', '')} {fil.get('material', '')}".strip()
+        tg_send(t("low_stock", sid=spool_id, label=label, grams=f"{float(rem):.1f}"))
+
+
+def _capture_spool_start(tray: int):
+    mapping  = load_mapping()
+    spool_id = mapping.get(str(tray))
+    if spool_id:
+        data = _spoolman_get(f"/api/v1/spool/{spool_id}")
+        if data:
+            _state["spool_start_weight"] = data.get("remaining_weight")
+
+
+def _spool_deduct(weight_g: float, tray: int):
+    if weight_g <= 0 or tray == 255 or not SPOOLMAN_URL:
+        return
+    mapping  = load_mapping()
+    spool_id = mapping.get(str(tray))
+    if not spool_id:
+        return
+    ok = _spoolman_put(f"/api/v1/spool/{spool_id}/use", {"use_weight": weight_g})
+    if ok:
+        log.info(f"Deducted {weight_g}g from Spoolman spool {spool_id}")
+    else:
+        log.error(f"Failed to deduct from Spoolman spool {spool_id}")
+
+
+# ── Print History ─────────────────────────────────────────────────────────────
+def _add_history(entry: dict):
+    history = _load_json(PRINT_HISTORY_FILE, [])
+    history.append(entry)
+    _save_json(PRINT_HISTORY_FILE, history[-100:])
+
+
+# ── MQTT Publisher ────────────────────────────────────────────────────────────
+def _mqtt_publish(payload: dict) -> bool:
+    global _mqtt_client
+    if not _mqtt_client:
+        return False
+    topic = f"device/{PRINTER_SERIAL}/request"
+    try:
+        _mqtt_client.publish(topic, json.dumps(payload))
         return True
     except Exception as e:
-        log.error(f"Printer command publish failed: {e}")
+        log.error(f"MQTT publish failed: {e}")
         return False
 
-def append_print_history(entry):
-    """Append a completed print record to the history JSON file."""
-    try:
-        history = []
-        if os.path.exists(PRINT_HISTORY_FILE):
-            with open(PRINT_HISTORY_FILE, 'r') as f:
-                history = json.load(f)
-        history.append(entry)
-        history = history[-100:]  # keep last 100
-        with open(PRINT_HISTORY_FILE, 'w') as f:
-            json.dump(history, f)
-    except Exception as e:
-        log.error(f"Failed to save print history: {e}")
 
-def check_spoolman_low_stock(spool_id):
-    """Alert if a Spoolman spool has fallen below LOW_STOCK_THRESHOLD."""
-    if not SPOOLMAN_URL or not spool_id:
-        return
-    try:
-        r = requests.get(f"{SPOOLMAN_URL}/api/v1/spool/{spool_id}", timeout=5)
-        if r.status_code == 200:
-            data  = r.json()
-            rem   = data.get("remaining_weight", 9999)
-            if rem < LOW_STOCK_THRESHOLD:
-                fil   = data.get("filament", {})
-                label = f"{fil.get('brand','')} {fil.get('name','')} {fil.get('material','')}".strip()
-                send_telegram(t("low_stock", sid=spool_id, label=label, grams=f"{float(rem):.1f}"))
-                log.info(f"Low stock alert: spool {spool_id} has {rem}g remaining")
-    except Exception as e:
-        log.error(f"Low stock check failed: {e}")
+def request_pushall():
+    """Ask printer to push its full current state."""
+    _mqtt_publish({"pushing": {"sequence_id": "0", "command": "pushall"}})
+    log.info("Sent pushall request")
 
-# ── Interactive Bot Commands ──────────────────────────────
-@bot.message_handler(commands=['status'])
-def send_status(message):
-    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
 
-    try:
-        # Request a live snapshot from the printer and wait up to 3 s for the reply
-        _status_refresh.clear()
-        request_pushall()
-        _status_refresh.wait(timeout=3)
+def printer_cmd(cmd: dict) -> bool:
+    return _mqtt_publish({"print": {"sequence_id": "0", **cmd}})
 
-        # Fetch current light status from HA if available
-        light_str = ""
-        if HA_API_AVAILABLE:
-            light_state, _ = get_ha_light_state(HA_LIGHT_ENTITY)
-            light_str = "\n" + (t("light_on") if light_state == "on" else t("light_off"))
 
-        # Try to fetch weight from HA sensor/entity (configured or auto-discovered)
-        ha_weight = None
-        ha_prefix = None
-        if HA_API_AVAILABLE:
-            weight_entity = HA_WEIGHT_ENTITY or discover_ha_weight_entity()
-            if weight_entity:
-                if "_print_weight" in weight_entity:
-                    ha_prefix = weight_entity.replace("_print_weight", "")
-                try:
-                    val = get_ha_sensor_state(weight_entity)
-                    if val:
-                        cleaned_val = str(val).lower().replace('g', '').strip()
-                        ha_weight = round(float(cleaned_val), 1)
-                        log.info(f"Fetched weight from HA entity {weight_entity}: {ha_weight}g")
-                except Exception as e:
-                    log.error(f"Failed to fetch weight from HA sensor: {e}")
+# ── Print State Machine Handlers ──────────────────────────────────────────────
+def _on_print_start(mc_percent, mc_remaining, filename, weight):
+    _state["printing"]       = True
+    _state["last_milestone"] = 0
 
-        with _lock:
-            if _state["printing"]:
-                filename = _state["filename"] or "Unknown"
-                pct      = _state["mc_percent"]
-                tray     = _state.get("tray_now", 255)
-
-                # ── Weight (filament used estimate) ───────────────
-                weight_str = "N/A"
-
-                if ha_weight is not None and ha_weight > 0:
-                    weight_str = f"{ha_weight:.1f}g"
-                elif _state.get("print_weight", 0.0) > 0:
-                    weight_str = f"{float(_state['print_weight']):.1f}g"
-                elif SPOOLMAN_URL and tray != 255:
-                    mapping    = load_spoolman_mapping()
-                    spool_id   = mapping.get(str(tray))
-                    sw_start   = _state.get("spool_start_weight")
-                    if spool_id and sw_start:
-                        try:
-                            r2 = requests.get(f"{SPOOLMAN_URL}/api/v1/spool/{spool_id}", timeout=5)
-                            if r2.status_code == 200:
-                                cur_rem = r2.json().get("remaining_weight")
-                                if cur_rem is not None:
-                                    used = float(sw_start) - float(cur_rem)
-                                    if used > 0:
-                                        weight_str = f"~{used:.1f}g"
-                        except Exception:
-                            pass
-
-                # ── Spool remaining ───────────────────────────────
-                spool_rem_str = "N/A"
-                if SPOOLMAN_URL and tray != 255:
-                    mapping  = load_spoolman_mapping()
-                    spool_id = mapping.get(str(tray))
-                    if spool_id:
-                        try:
-                            r3 = requests.get(f"{SPOOLMAN_URL}/api/v1/spool/{spool_id}", timeout=5)
-                            if r3.status_code == 200:
-                                rem = r3.json().get("remaining_weight")
-                                if rem is not None:
-                                    spool_rem_str = f"{float(rem):.1f}g"
-                        except Exception:
-                            pass
-
-                # ── Remaining time (smart: HA > MQTT/Extrapolated) ──
-                rem_mins = _smart_remaining()
-                eta      = _format_minutes(rem_mins)
-                finish   = _finish_time(rem_mins)
-
-                res = t("status_printing", filename=filename, pct=pct, weight=weight_str,
-                        spool_rem=spool_rem_str, eta=eta, finish=finish, light_status=light_str)
-            else:
-                res = t("status_idle", light_status=light_str)
-        
-        # Try to add a snapshot if HA is available
-        if HA_API_AVAILABLE:
-            img_bytes, error = get_ha_snapshot(HA_CAMERA_ENTITY)
-            if img_bytes:
-                try:
-                    bot.send_photo(message.chat.id, img_bytes, caption=res)
-                    return
-                except Exception as e:
-                    log.error(f"Failed to send status photo: {e}")
-                
-        # Fallback to text if snapshot fails or is not enabled or no HA token
-        bot.reply_to(message, res)
-
-    except Exception as e:
-        import traceback
-        err_msg = f"Crash in /status:\n{e}\n\n{traceback.format_exc()}"
-        bot.reply_to(message, err_msg)
-
-@bot.message_handler(commands=['spools', 'inventory'])
-def send_spools(message):
-    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
-    if not SPOOLMAN_URL or SPOOLMAN_URL == "http://":
-        bot.reply_to(message, t("spoolman_not_enabled"))
-        return
-        
-    try:
-        r = requests.get(f"{SPOOLMAN_URL}/api/v1/spool", timeout=10)
-        if r.status_code == 200:
-            spools = r.json()
-            if not spools:
-                bot.reply_to(message, t("spools_title") + t("spools_empty"))
-                return
-                
-            res = t("spools_title")
-            for spool in spools:
-                weight = round(spool.get("remaining_weight", 0))
-                if weight <= 0: continue
-                
-                spool_id = spool.get("id")
-                filament = spool.get("filament", {})
-                hexcolor = filament.get("color_hex", "")
-                emoji = color_to_emoji(hexcolor)
-                brand = filament.get("vendor", {}).get("name", "Unknown")
-                mat = filament.get("material", "Unknown")
-                
-                res += t("spools_item", id=spool_id, emoji=emoji, brand=brand, material=mat, grams=weight)
-            
-            if len(res) > 4000:
-                res = res[:4000] + "\n... (too long)"
-            bot.reply_to(message, res)
-        else:
-            bot.reply_to(message, f"❌ Spoolman Error: {r.status_code}")
-    except Exception as e:
-        log.error(f"Failed to fetch spools: {e}")
-        bot.reply_to(message, f"❌ Spoolman Connection Error")
-
-@bot.message_handler(commands=['spoolman'])
-def handle_spoolman(message):
-    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
-    if not SPOOLMAN_URL or SPOOLMAN_URL == "http://":
-        bot.reply_to(message, t("spoolman_not_enabled"))
-        return
-        
-    parts = message.text.split()
-    if len(parts) >= 3:
+    # Backdate start_time if we're mid-print on fresh connect
+    if 1 < mc_percent < 100 and mc_remaining > 0:
         try:
-            spool_id = int(parts[1])
-            slot_input = int(parts[2])
-            if 1 <= slot_input <= 4:
-                slot_id_str = str(slot_input - 1)
-                mapping = load_spoolman_mapping()
-                mapping[slot_id_str] = spool_id
-                save_spoolman_mapping(mapping)
-                bot.reply_to(message, t("spoolman_success", sid=spool_id, slot=slot_input))
-                return
-        except ValueError:
-            pass
-    bot.reply_to(message, t("spoolman_fail"))
+            total_est = mc_remaining / (1 - mc_percent / 100.0)
+            elapsed   = total_est * (mc_percent / 100.0)
+            _state["start_time"] = datetime.now() - timedelta(minutes=elapsed)
+        except Exception:
+            _state["start_time"] = datetime.now()
+    else:
+        _state["start_time"] = datetime.now()
 
-@bot.message_handler(commands=['ams'])
-def send_ams(message):
-    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
-    with _lock:
-        if not _ams_state:
-            bot.reply_to(message, "Waiting for AMS data from printer...")
-            return
+    _capture_spool_start(_state.get("tray_now", 255))
 
-        mapping = load_spoolman_mapping()
-        res = t("ams_title")
-        
-        for i in range(4):
-            slot_str = str(i)
-            slot_data = _ams_state.get(slot_str)
-            
-            # If Spoolman is mapped to this slot, query it
-            if slot_str in mapping and SPOOLMAN_URL and SPOOLMAN_URL != "http://":
-                spool_id = mapping[slot_str]
-                try:
-                    r = requests.get(f"{SPOOLMAN_URL}/api/v1/spool/{spool_id}", timeout=5)
-                    if r.status_code == 200:
-                        spool = r.json()
-                        rem_w = round(spool.get("remaining_weight", 0))
-                        
-                        filament = spool.get("filament", {})
-                        hexcolor = filament.get("color_hex", "")
-                        emoji = color_to_emoji(hexcolor)
-                        brand = filament.get("vendor", {}).get("name", "Unknown")
-                        mat = filament.get("material", "Unknown")
-                        
-                        res += t("ams_spoolman_slot", slot=i+1, emoji=emoji, brand=brand, material=mat, grams=rem_w)
-                    else:
-                        res += t("ams_spoolman_fail", slot=i+1, sid=spool_id)
-                except Exception:
-                    res += t("ams_spoolman_fail", slot=i+1, sid=spool_id)
-            
-            # If no Spoolman, fallback to basic Bambu native reporting
-            else:
-                if not slot_data or slot_data.get("type") in ("Unknown", "") or slot_data.get("remain", -1) < 0:
-                    res += t("ams_empty", slot=i+1)
-                else:
-                    emoji = color_to_emoji(slot_data.get("color"))
-                    typ = slot_data.get("type", "")
-                    brand = slot_data.get("brand", "")
-                    grams = slot_data.get("remain", 0) * 10
-                    res += t("ams_slot", slot=i+1, emoji=emoji, type=typ, brand=brand, grams=grams)
+    rem   = smart_remaining()
+    w_str = f"{weight:.1f}g" if weight > 0 else "–"
+    log.info(f"Print started: {filename}")
+    tg_photo(t("print_start", filename=filename or "–", weight=w_str,
+               eta=fmt_mins(rem), finish=finish_time(rem)))
+    _persist_state()
 
-    bot.reply_to(message, res)
 
-@bot.message_handler(commands=['help'])
-def send_help(message):
-    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
-    bot.reply_to(message, t("help"), parse_mode="Markdown")
+def _on_reconnect_recovery(mc_percent, mc_remaining):
+    """Silently recover printing=True after bot restart mid-print."""
+    _state["printing"] = True
+    log.info(f"Mid-print reconnect recovery at {mc_percent}%")
 
-@bot.message_handler(commands=['map'])
-def handle_map(message):
-    """Alias for /spoolman with argument order: /map <slot> <spool_id>"""
-    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
-    if not SPOOLMAN_URL or SPOOLMAN_URL == "http://":
-        bot.reply_to(message, t("spoolman_not_enabled"))
-        return
-
-    parts = message.text.split()
-    if len(parts) >= 3:
+    if not _state["start_time"] and mc_percent and mc_remaining:
         try:
-            slot_input = int(parts[1])
-            spool_id   = int(parts[2])
-            if 1 <= slot_input <= 4:
-                slot_id_str = str(slot_input - 1)
-                mapping = load_spoolman_mapping()
-                mapping[slot_id_str] = spool_id
-                save_spoolman_mapping(mapping)
-                bot.reply_to(message, t("spoolman_success", sid=spool_id, slot=slot_input))
-                return
-        except ValueError:
-            pass
-    bot.reply_to(message, t("spoolman_fail"))
+            total_est = mc_remaining / (1 - mc_percent / 100.0)
+            elapsed   = total_est * (mc_percent / 100.0)
+            _state["start_time"] = datetime.now() - timedelta(minutes=elapsed)
+        except Exception:
+            _state["start_time"] = datetime.now()
 
-@bot.message_handler(commands=['set'])
-def handle_set(message):
-    """Create a new spool in Spoolman and map it to an AMS slot."""
-    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
+    # Mark all already-passed milestones so we don't re-fire them
+    for m in (25, 50, 75):
+        if mc_percent >= m:
+            _state["last_milestone"] = m
+    _persist_state()
 
-    if not SPOOLMAN_URL or SPOOLMAN_URL == "http://":
-        bot.reply_to(message, t("spoolman_not_enabled"))
-        return
 
-    parts = message.text.strip().split(maxsplit=3)
-    # /set <slot> <brand> <material>
-    if len(parts) < 4:
-        bot.reply_to(message, t("setfilament_usage"))
-        return
+def _on_print_finish(filename, weight):
+    _state["printing"] = False
+    dur  = ""
+    if _state["start_time"]:
+        dur = fmt_duration((datetime.now() - _state["start_time"]).total_seconds())
+    tray  = _state.get("tray_now", 255)
+    w_str = f"{weight:.1f}g" if weight > 0 else "–"
+    log.info(f"Print finished: {filename} in {dur}, {weight}g used")
+    tg_photo(t("print_done", filename=filename or "–", weight=w_str, duration=dur))
 
-    try:
-        slot_num = int(parts[1])          # 1-based from user
-        brand    = parts[2]
-        material = parts[3]
-        slot_id  = str(slot_num - 1)     # 0-based internally
+    _spool_deduct(weight, tray)
+    _add_history({
+        "date":     datetime.now(JERUSALEM).strftime("%Y-%m-%d %H:%M"),
+        "filename": filename or "Unknown",
+        "duration": dur or "–",
+        "grams":    weight,
+        "slot":     tray,
+    })
 
-        if slot_num < 1 or slot_num > 4:
-            bot.reply_to(message, t("setfilament_usage"))
-            return
+    if tray != 255:
+        mapping  = load_mapping()
+        spool_id = mapping.get(str(tray))
+        if spool_id:
+            threading.Thread(target=_check_low_stock, args=(spool_id,), daemon=True).start()
 
-        # Pull color from current AMS state for this slot
-        ams_info = _ams_state.get(slot_id, {})
-        color    = ams_info.get("color", "FFFFFF")
+    _persist_state()
 
-        # Create spool in Spoolman
-        payload = {
-            "filament": {"name": f"{brand} {material}", "material": material, "color_hex": color},
-            "remaining_weight": 1000,
-        }
-        r = requests.post(f"{SPOOLMAN_URL}/api/v1/spool", json=payload, timeout=10)
-        if r.status_code not in (200, 201):
-            log.error(f"Spoolman create spool failed: {r.status_code} {r.text}")
-            bot.reply_to(message, t("setfilament_fail"))
-            return
 
-        spool_id = r.json().get("id")
-        if not spool_id:
-            bot.reply_to(message, t("setfilament_fail"))
-            return
-
-        # Map slot to the new spool
-        mapping = load_spoolman_mapping()
-        mapping[slot_id] = spool_id
-        save_spoolman_mapping(mapping)
-
-        log.info(f"Created Spoolman spool {spool_id} ({brand} {material}) -> slot {slot_id}")
-        bot.reply_to(message, t("setfilament_ok", slot=slot_num))
-
-    except (ValueError, IndexError):
-        bot.reply_to(message, t("setfilament_usage"))
-    except Exception as e:
-        log.error(f"set command error: {e}")
-        bot.reply_to(message, t("setfilament_fail"))
-
-# ── Remote Control ────────────────────────────────────────
-@bot.message_handler(commands=['pause'])
-def handle_pause(message):
-    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
-    with _lock:
-        if not _state["printing"]:
-            bot.reply_to(message, t("ctrl_not_printing")); return
-    bot.reply_to(message, t("ctrl_pause"))
-    send_printer_command({"command": "pause"})
-
-@bot.message_handler(commands=['resume'])
-def handle_resume(message):
-    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
-    bot.reply_to(message, t("ctrl_resume"))
-    send_printer_command({"command": "resume"})
-
-@bot.message_handler(commands=['cancel'])
-def handle_cancel(message):
-    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
-    with _lock:
-        if not _state["printing"]:
-            bot.reply_to(message, t("ctrl_not_printing")); return
-    markup = telebot.types.InlineKeyboardMarkup()
-    markup.add(
-        telebot.types.InlineKeyboardButton("✅ Yes, cancel", callback_data="cancel_yes"),
-        telebot.types.InlineKeyboardButton("❌ No, keep going", callback_data="cancel_no"),
-    )
-    bot.reply_to(message, t("ctrl_cancel_confirm"), reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data in ("cancel_yes", "cancel_no"))
-def handle_cancel_callback(call):
-    if str(call.message.chat.id) != str(TELEGRAM_CHAT_ID): return
-    bot.answer_callback_query(call.id)
-    if call.data == "cancel_yes":
-        bot.edit_message_text(t("ctrl_cancel_yes"),
-                              call.message.chat.id, call.message.message_id)
-        send_printer_command({"command": "stop"})
-    else:
-        bot.edit_message_text(t("ctrl_cancel_no"),
-                              call.message.chat.id, call.message.message_id)
-
-# ── Print History ─────────────────────────────────────────
-@bot.message_handler(commands=['history'])
-def handle_history(message):
-    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
-    try:
-        if not os.path.exists(PRINT_HISTORY_FILE):
-            bot.reply_to(message, t("history_empty")); return
-        with open(PRINT_HISTORY_FILE, 'r') as f:
-            history = json.load(f)
-        if not history:
-            bot.reply_to(message, t("history_empty")); return
-        last10 = history[-10:][::-1]  # newest first
-        res = t("history_title")
-        for entry in last10:
-            grams = f"{float(entry.get('grams', 0)):.1f}g" if entry.get('grams') else "–"
-            res += t("history_item",
-                     date=entry.get("date", "?"),
-                     filename=entry.get("filename", "?")[:20],
-                     duration=entry.get("duration", "?"),
-                     grams=grams)
-        bot.reply_to(message, res)
-    except Exception as e:
-        log.error(f"history command error: {e}")
-        bot.reply_to(message, "❌ Error reading history.")
-
-@bot.message_handler(commands=['cam', 'snapshot'])
-def handle_cam(message):
-    """Fetches and sends a live camera snapshot from Home Assistant."""
-    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
-    
-    if not HA_API_AVAILABLE:
-        bot.reply_to(message, t("ha_no_api"))
-        return
-
-    # Notify user we are working on it (chat action "upload_photo")
-    try:
-        bot.send_chat_action(message.chat.id, 'upload_photo')
-    except Exception:
-        pass
-    
-    img_bytes, error = get_ha_snapshot(HA_CAMERA_ENTITY)
-    if error:
-        bot.reply_to(message, error)
-        return
-        
-    try:
-        bot.send_photo(message.chat.id, img_bytes, caption=f"📸 {datetime.now().strftime('%H:%M:%S')}")
-    except Exception as e:
-        log.error(f"Failed to send photo: {e}")
-        bot.reply_to(message, f"❌ Failed to send photo: {e}")
-
-@bot.message_handler(commands=['light', 'lamp'])
-def handle_light(message):
-    """Toggles the printer light in Home Assistant."""
-    if str(message.chat.id) != str(TELEGRAM_CHAT_ID): return
-    
-    if not HA_API_AVAILABLE:
-        bot.reply_to(message, t("ha_no_api"))
-        return
-
-    current_state, entity_id = get_ha_light_state(HA_LIGHT_ENTITY)
-    if not entity_id:
-        bot.reply_to(message, t("light_no_entity"))
-        return
-        
-    # Toggle logic: if 'on' -> turn 'off', else -> turn 'on'
-    new_state = "off" if current_state == "on" else "on"
-    error = set_ha_light_state(entity_id, new_state)
-    
-    if error:
-        bot.reply_to(message, t("light_fail", error=error))
-    else:
-        msg = t("light_on") if new_state == "on" else t("light_off")
-        bot.reply_to(message, msg)
-
-@bot.message_handler(commands=['debug'])
-def handle_debug(message):
-    """Sends current state and last raw MQTT print object to Telegram."""
-    log.info(f"Debug command received from chat_id: {message.chat.id}")
-    if str(message.chat.id).strip() != str(TELEGRAM_CHAT_ID).strip():
-        log.warning(f"Unauthorized debug attempt from {message.chat.id}")
-        return
-    
-    try:
-        with _lock:
-            state_copy = dict(_state)
-            # Separate the heavy raw_print object
-            raw_print = state_copy.pop("_raw_print", {})
-            
-            state_json = json.dumps(state_copy, indent=2, default=str)
-            raw_json = json.dumps(raw_print, indent=2, default=str)
-        
-        # Use HTML for better reliability with raw JSON characters
-        debug_msg = (
-            "<b>🔍 Debug Info</b>\n\n"
-            "<b>State:</b>\n<pre>" + html.escape(state_json) + "</pre>\n\n"
-            "<b>Last Raw MQTT:</b>\n<pre>" + html.escape(raw_json) + "</pre>"
-        )
-        
-        if len(debug_msg) > 4000:
-            debug_msg = debug_msg[:4000] + "\n... (truncated)"
-        
-        bot.reply_to(message, debug_msg, parse_mode="HTML")
-    except Exception as e:
-        log.error(f"Debug command failed: {e}")
-        bot.reply_to(message, f"❌ Debug failed: {e}")
-
-# ── MQTT callbacks ────────────────────────────────────────
-RC_CODES = {
+# ── MQTT Callbacks ────────────────────────────────────────────────────────────
+_RC_CODES = {
     1: "Incorrect protocol version",
     2: "Invalid client identifier",
     3: "Server unavailable",
-    4: "Bad username or password",
+    4: "Bad username or password — check your printer Access Code",
     5: "Not authorised",
 }
 
+
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
-        log.info("Connected to printer MQTT")
         topic = f"device/{PRINTER_SERIAL}/report"
         client.subscribe(topic)
-        log.info(f"Subscribed to {topic}")
-        send_telegram(t("connected"))
-        # Request a full state dump immediately after connecting
+        log.info(f"MQTT connected ✓ subscribed to {topic}")
+        tg_send(t("connected", serial=PRINTER_SERIAL, version=VERSION))
+        # Request full state dump 2s after connect (gives printer time to respond)
         threading.Timer(2.0, request_pushall).start()
     else:
-        reason = RC_CODES.get(rc, f"Unknown error (rc={rc})")
-        log.error(f"MQTT connect failed: {reason} (rc={rc})")
-        send_telegram(f"❌ MQTT connection failed: {reason}")
+        reason = _RC_CODES.get(rc, f"Unknown error (rc={rc})")
+        log.error(f"MQTT connect failed: {reason}")
+        tg_send(t("mqtt_failed", reason=reason))
+
 
 def on_disconnect(client, userdata, rc):
     if rc != 0:
-        log.warning(f"MQTT disconnected unexpectedly (rc={rc}). Will auto-reconnect.")
+        log.warning(f"MQTT disconnected unexpectedly (rc={rc}), will auto-reconnect…")
+
 
 def on_message(client, userdata, msg):
     try:
@@ -1046,10 +793,16 @@ def on_message(client, userdata, msg):
         return
 
     with _lock:
-        # Signal any waiting /status command that fresh data has arrived
-        _status_refresh.set()
+        _status_event.set()
+        _state["_raw_print"] = print_data
 
-        # Update AMS Active Tray tracker
+        # ── Extract fields, falling back to current state ──────────────────
+        gcode_state  = print_data.get("gcode_state",         _state["gcode_state"])
+        mc_percent   = print_data.get("mc_percent",          _state["mc_percent"])
+        mc_remaining = print_data.get("mc_remaining_time",   _state["mc_remaining_time"])
+        filename     = print_data.get("subtask_name",        _state["filename"]) or _state["filename"]
+
+        # AMS active tray
         ams_block = print_data.get("ams", {})
         if "tray_now" in ams_block:
             try:
@@ -1057,309 +810,555 @@ def on_message(client, userdata, msg):
             except Exception:
                 pass
 
-        # Store raw print for debugging
-        _state["_raw_print"] = print_data
-
-        # Process Print State & Weight Detection
-        gcode_state     = print_data.get("gcode_state", _state["gcode_state"])
-        mc_percent      = print_data.get("mc_percent", _state["mc_percent"])
-        mc_remaining    = print_data.get("mc_remaining_time", _state["mc_remaining_time"])
-        filename        = print_data.get("subtask_name", _state["filename"]) or _state["filename"]
-        
-        # Try multiple fields for weight (grams or milligrams fallbacks)
+        # Filament weight — try grams fields first
         new_weight = _state["print_weight"]
-        
-        # 1. Direct grams fields
-        w_grams = print_data.get("subtask_weight") or print_data.get("print_weight")
-        if w_grams is not None:
-            try:
-                # Clean 'g' and convert to float
-                cleaned_w = str(w_grams).lower().replace('g', '').strip()
-                parsed_w = float(cleaned_w)
-                if parsed_w > 0:
-                    new_weight = round(parsed_w, 1)
-            except:
-                pass
-        
-        # Fallback to milligrams if still 0
-        if new_weight <= 0:
-            w_mg = print_data.get("total_weight") or print_data.get("weight")
-            if w_mg is not None:
+        for field in ("subtask_weight", "print_weight"):
+            val = print_data.get(field)
+            if val is not None:
                 try:
-                    parsed_mg = float(str(w_mg).lower().replace('g','').strip())
-                    if parsed_mg > 0:
-                        new_weight = round(parsed_mg / 1000.0, 1)
-                except:
+                    w = float(str(val).lower().replace("g", "").strip())
+                    if w > 0:
+                        new_weight = round(w, 1)
+                        break
+                except Exception:
                     pass
 
-        weight_estimate = new_weight
+        # Milligrams fallback
+        if new_weight <= 0:
+            for field in ("total_weight", "weight"):
+                val = print_data.get(field)
+                if val is not None:
+                    try:
+                        w = float(str(val).lower().replace("g", "").strip())
+                        if w > 0:
+                            new_weight = round(w / 1000.0, 1)
+                            break
+                    except Exception:
+                        pass
 
         prev_state   = _state["gcode_state"]
         was_printing = _state["printing"]
 
-        _state["gcode_state"]        = gcode_state
-        _state["mc_percent"]         = mc_percent
-        _state["mc_remaining_time"]  = mc_remaining
-        _state["print_weight"]       = weight_estimate
+        _state.update({
+            "gcode_state":       gcode_state,
+            "mc_percent":        mc_percent,
+            "mc_remaining_time": mc_remaining,
+            "print_weight":      new_weight,
+        })
         if filename:
             _state["filename"] = filename
 
-        # Print started (fresh start: transition from non-RUNNING state)
-        if gcode_state == "RUNNING" and prev_state in ("PREPARE", "IDLE", "FINISH", ""):
-            _state["printing"]   = True
-            _state["last_milestone"] = 0
-            
-            # If we connected mid-print, backdate the start_time so extrapolation doesn't think we just started at 0 minutes.
-            if 1 < mc_percent < 100 and mc_remaining > 0:
-                total_est_mins = mc_remaining / (1 - (mc_percent / 100.0))
-                elapsed_mins = total_est_mins * (mc_percent / 100.0)
-                _state["start_time"] = datetime.now() - timedelta(minutes=elapsed_mins)
-            else:
-                _state["start_time"] = datetime.now()
+        # ── State Machine ──────────────────────────────────────────────────
 
-            # Optionally capture spool start weight
-            tray = _state.get("tray_now", 255)
-            if SPOOLMAN_URL and tray != 255:
-                mapping = load_spoolman_mapping()
-                spool_id = mapping.get(str(tray))
-                if spool_id:
-                    try:
-                        r = requests.get(f"{SPOOLMAN_URL}/api/v1/spool/{spool_id}", timeout=3)
-                        if r.status_code == 200:
-                            _state["spool_start_weight"] = r.json().get("remaining_weight")
-                    except Exception:
-                        pass
-                        
-            rem_mins = _smart_remaining()
-            eta = _format_minutes(rem_mins)
-            log.info(f"Print started: {filename}")
-            
-            # Format weight for notification
-            w_disp = f"{float(_state['print_weight']):.1f}g"
-            
-            send_telegram_with_photo(t("print_start", filename=filename or "–", weight=w_disp, eta=eta, finish=_finish_time(rem_mins)))
+        if gcode_state == "RUNNING" and prev_state in ("PREPARE", "IDLE", "FINISH", "FAILED", ""):
+            # Fresh print start
+            _on_print_start(mc_percent, mc_remaining, filename, new_weight)
 
-        # Mid-print reconnect recovery: bot restarted while printer was already printing.
-        # gcode_state is RUNNING but printing flag is False — silently recover without re-sending start notification.
         elif gcode_state == "RUNNING" and not was_printing:
-            _state["printing"] = True
-            log.info(f"Mid-print reconnect detected at {mc_percent}% — recovering state silently.")
-            if _state.get("start_time") is None and mc_percent and mc_remaining:
-                try:
-                    total_est_mins = mc_remaining / (1 - (mc_percent / 100.0))
-                    elapsed_mins = total_est_mins * (mc_percent / 100.0)
-                    _state["start_time"] = datetime.now() - timedelta(minutes=elapsed_mins)
-                except Exception:
-                    _state["start_time"] = datetime.now()
-            # Set last_milestone so we don't fire already-passed progress alerts
-            for m in (25, 50, 75):
-                if mc_percent >= m:
-                    _state["last_milestone"] = m
+            # Bot restarted while printer was already printing — recover silently
+            _on_reconnect_recovery(mc_percent, mc_remaining)
 
-        # Print finished
-        elif gcode_state == "FINISH" and was_printing:
-            _state["printing"] = False
-            dur = ""
-            if _state["start_time"]:
-                dur = _format_duration((datetime.now() - _state["start_time"]).total_seconds())
-            
-            weight_used = _state.get("print_weight", 0)
-            tray = _state.get("tray_now", 255)
-            
-            # Spoolman auto-deduction
-            if weight_used > 0 and tray != 255:
-                mapping = load_spoolman_mapping()
-                str_tray = str(tray)
-                if SPOOLMAN_URL and SPOOLMAN_URL != "http://" and str_tray in mapping:
-                    spool_id = mapping[str_tray]
-                    try:
-                        r = requests.put(
-                            f"{SPOOLMAN_URL}/api/v1/spool/{spool_id}/use",
-                            json={"use_weight": weight_used},
-                            timeout=10
-                        )
-                        if r.status_code == 200:
-                            log.info(f"Subtracted {weight_used}g from Spoolman ID {spool_id} successfully.")
-                        else:
-                            log.error(f"Failed to subtract from Spoolman API: {r.status_code} {r.text}")
-                    except Exception as e:
-                        log.error(f"Spoolman API subtraction failed due to exception: {e}")
-
-            log.info(f"Print finished: {filename}")
-            weight_str = f"{float(weight_used):.1f}g"
-            send_telegram_with_photo(t("print_done", filename=filename or "–", weight=weight_str, duration=dur))
-
-            # Save to print history
-            append_print_history({
-                "date":     datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "filename": filename or "Unknown",
-                "duration": dur or "–",
-                "grams":    weight_used,
-                "slot":     tray,
-            })
-
-            # Spoolman low stock check
-            if tray != 255:
-                mapping = load_spoolman_mapping()
-                sid = mapping.get(str(tray))
-                if sid:
-                    threading.Thread(target=check_spoolman_low_stock, args=(sid,), daemon=True).start()
-
-        # Print failed / cancelled
-        elif gcode_state in ("FAILED", "PAUSE") and was_printing and gcode_state == "FAILED":
-            _state["printing"] = False
-            log.info(f"Print failed: {filename}")
-            send_telegram_with_photo(t("print_failed", filename=filename or "–"))
-
-        # Progress milestones 25 / 50 / 75
         elif gcode_state == "RUNNING" and was_printing:
+            # Progress milestones: 25%, 50%, 75%
             for milestone in (25, 50, 75):
                 if mc_percent >= milestone > _state["last_milestone"]:
                     _state["last_milestone"] = milestone
-                    rem_mins = _smart_remaining()
-                    send_telegram_with_photo(t("progress", pct=milestone, remaining=_format_minutes(rem_mins), finish=_finish_time(rem_mins)))
+                    rem = smart_remaining()
+                    tg_photo(t("progress", pct=milestone,
+                               remaining=fmt_mins(rem), finish=finish_time(rem)))
                     break
 
-        # Process AMS Slot data
-        ams_data = print_data.get("ams", {}).get("ams", [])
+        elif gcode_state == "FINISH" and was_printing:
+            _on_print_finish(filename, new_weight)
+
+        elif gcode_state == "FAILED" and was_printing:
+            _state["printing"] = False
+            log.info(f"Print failed: {filename}")
+            tg_photo(t("print_failed", filename=filename or "–"))
+            _persist_state()
+
+        elif gcode_state == "PAUSE" and was_printing and prev_state == "RUNNING":
+            tg_send(t("print_paused", filename=filename or "–", pct=mc_percent))
+
+        elif gcode_state == "RUNNING" and prev_state == "PAUSE":
+            tg_send(t("print_resumed", filename=filename or "–"))
+
+        # ── AMS slot data ──────────────────────────────────────────────────
+        ams_data = ams_block.get("ams", [])
         for ams_unit in ams_data:
-            for tray in ams_unit.get("tray", []):
-                slot_id = tray.get("id")
-                if slot_id is None: continue
-                remain_pct = tray.get("remain", -1)
-                ftype  = tray.get("tray_type", "Unknown")
-                color  = tray.get("tray_color", "FFFFFF")
-                brand  = tray.get("tray_sub_brands", "")
-
-                _ams_state[str(slot_id)] = {
-                    "type": ftype, "color": color,
-                    "brand": brand, "remain": remain_pct
+            for tray_info in ams_unit.get("tray", []):
+                sid = tray_info.get("id")
+                if sid is None:
+                    continue
+                remain_pct = tray_info.get("remain", -1)
+                _ams_state[str(sid)] = {
+                    "type":   tray_info.get("tray_type", "Unknown"),
+                    "color":  tray_info.get("tray_color", "FFFFFF"),
+                    "brand":  tray_info.get("tray_sub_brands", ""),
+                    "remain": remain_pct,
                 }
+                # Low filament alert (native, no Spoolman mapping)
+                mapping = load_mapping()
+                if str(sid) not in mapping and 0 <= remain_pct < 10:
+                    if sid not in _alerted_slots:
+                        tg_send(t("low_filament", slot=int(sid) + 1, grams=remain_pct * 10))
+                        _alerted_slots.add(sid)
+                elif sid in _alerted_slots and remain_pct >= 10:
+                    _alerted_slots.discard(sid)
 
-                # ── New spool detection ──────────────────────
-                fingerprint = f"{color}:{ftype}"
-                prev_fp = _ams_fingerprints.get(str(slot_id))
-                if (fingerprint != "FFFFFF:Unknown"
-                        and fingerprint != ":"
-                        and prev_fp is not None
-                        and prev_fp != fingerprint):
-                    # Spool changed — notify user
-                    emoji = color_to_emoji(color)
-                    note = t("ams_new_filament",
-                             slot=int(slot_id)+1,
-                             emoji=emoji,
-                             ftype=ftype or "Unknown")
-                    send_telegram(note)
-                    log.info(f"New filament detected in slot {slot_id}: {fingerprint}")
-                _ams_fingerprints[str(slot_id)] = fingerprint
 
-                # ── Low Filament alert ───────────────────────
-                mapping = load_spoolman_mapping()
-                if str(slot_id) not in mapping:
-                    check_grams = 9999
-                    if 0 <= remain_pct <= 100:
-                        check_grams = remain_pct * 10
-                    if check_grams < 100:
-                        if slot_id not in _alerted_slots:
-                            send_telegram(t("low_filament", slot=int(slot_id)+1, grams=check_grams))
-                            _alerted_slots.add(slot_id)
-                    else:
-                        if slot_id in _alerted_slots:
-                            _alerted_slots.remove(slot_id)
+# ── Bot Commands ──────────────────────────────────────────────────────────────
 
-# ── Bambu Cloud MQTT ─────────────────────────────────────────
-def get_bambu_token():
+@bot.message_handler(commands=["start", "help"])
+def cmd_help(message):
+    if not chat_ok(message):
+        return
+    bot.reply_to(message, t("help"), parse_mode="MarkdownV2")
+
+
+@bot.message_handler(commands=["status"])
+def cmd_status(message):
+    if not chat_ok(message):
+        return
     try:
-        r = requests.post(
-            "https://api.bambulab.com/v1/user-service/user/login",
-            json={"account": BAMBU_USERNAME, "password": BAMBU_PASSWORD},
-            timeout=15
-        )
-        data = r.json()
-        token = data.get("accessToken") or data.get("token")
-        if token:
-            log.info("Bambu Cloud token obtained.")
-            return token
-        log.warning(f"Token response: {data}")
+        # Request fresh data from printer and wait up to 3s
+        _status_event.clear()
+        request_pushall()
+        _status_event.wait(timeout=3)
+
+        # Light status string
+        light_str = ""
+        if HA_AVAILABLE:
+            lstate, _ = ha_light_state()
+            light_str = "\n" + (t("light_on") if lstate == "on" else t("light_off"))
+
+        with _lock:
+            gcode = _state["gcode_state"]
+            pct   = _state["mc_percent"]
+            fn    = _state["filename"] or "Unknown"
+            tray  = _state["tray_now"]
+
+            if _state["printing"] and gcode not in ("IDLE", "FINISH", ""):
+                # ── Weight ────────────────────────────────────────────────
+                weight_str = "–"
+                if HA_AVAILABLE:
+                    we = _ha_weight_entity()
+                    if we:
+                        val = _ha_sensor(we)
+                        if val:
+                            try:
+                                weight_str = f"{float(str(val).replace('g','').strip()):.1f}g"
+                            except Exception:
+                                pass
+                if weight_str == "–" and _state["print_weight"] > 0:
+                    weight_str = f"{_state['print_weight']:.1f}g"
+
+                # ── Spool remaining ───────────────────────────────────────
+                spool_rem = "–"
+                if SPOOLMAN_URL and tray != 255:
+                    mapping  = load_mapping()
+                    spool_id = mapping.get(str(tray))
+                    if spool_id:
+                        data = _spoolman_get(f"/api/v1/spool/{spool_id}")
+                        if data:
+                            rem_w = data.get("remaining_weight")
+                            if rem_w is not None:
+                                spool_rem = f"{float(rem_w):.1f}g"
+
+                rem_mins = smart_remaining()
+
+                if gcode == "PAUSE":
+                    res = t("status_paused", filename=fn, pct=pct, light=light_str)
+                else:
+                    res = t("status_printing",
+                            filename=fn, pct=pct,
+                            weight=weight_str, spool_rem=spool_rem,
+                            eta=fmt_mins(rem_mins), finish=finish_time(rem_mins),
+                            light=light_str)
+            else:
+                res = t("status_idle", light=light_str)
+
+        # Send with photo if HA camera is available
+        if HA_AVAILABLE:
+            img, _ = ha_snapshot()
+            if img:
+                bot.send_photo(message.chat.id, img, caption=res)
+                return
+
+        bot.reply_to(message, res)
+
     except Exception as e:
-        log.error(f"Token fetch failed: {e}")
-    return None
+        import traceback
+        bot.reply_to(message, f"❌ /status error:\n{e}\n{traceback.format_exc()[:400]}")
 
-def connect_cloud_mqtt():
-    token = get_bambu_token()
-    if not token:
-        log.error("Cannot connect to Cloud MQTT without token.")
-        return None
 
+@bot.message_handler(commands=["ams"])
+def cmd_ams(message):
+    if not chat_ok(message):
+        return
+    with _lock:
+        if not _ams_state:
+            bot.reply_to(message, t("ams_no_data"))
+            return
+
+        mapping = load_mapping()
+        res = t("ams_title")
+
+        for i in range(4):
+            sid = str(i)
+
+            if sid in mapping and SPOOLMAN_URL:
+                # Show Spoolman data
+                data = _spoolman_get(f"/api/v1/spool/{mapping[sid]}")
+                if data:
+                    fil   = data.get("filament", {})
+                    emoji = color_to_emoji(fil.get("color_hex", ""))
+                    brand = fil.get("vendor", {}).get("name", "Unknown")
+                    mat   = fil.get("material", "")
+                    grams = round(data.get("remaining_weight", 0))
+                    res  += t("ams_slot_spoolman", slot=i + 1, emoji=emoji,
+                              brand=brand, material=mat, grams=grams)
+                else:
+                    res += t("ams_slot_empty", slot=i + 1)
+
+            elif sid in _ams_state:
+                # Show native MQTT data
+                slot = _ams_state[sid]
+                if slot.get("type") in ("Unknown", "", None) or slot.get("remain", -1) < 0:
+                    res += t("ams_slot_empty", slot=i + 1)
+                else:
+                    emoji = color_to_emoji(slot.get("color", ""))
+                    res  += t("ams_slot_native", slot=i + 1, emoji=emoji,
+                              ftype=slot.get("type", ""), brand=slot.get("brand", ""),
+                              grams=slot.get("remain", 0) * 10)
+            else:
+                res += t("ams_slot_empty", slot=i + 1)
+
+    bot.reply_to(message, res)
+
+
+@bot.message_handler(commands=["history"])
+def cmd_history(message):
+    if not chat_ok(message):
+        return
+    history = _load_json(PRINT_HISTORY_FILE, [])
+    if not history:
+        bot.reply_to(message, t("history_empty"))
+        return
+    last10 = history[-10:][::-1]
+    res = t("history_title")
+    for e in last10:
+        grams = f"{float(e.get('grams', 0)):.1f}g" if e.get("grams") else "–"
+        res  += t("history_item",
+                  date=e.get("date", "?"),
+                  filename=(e.get("filename", "?"))[:22],
+                  duration=e.get("duration", "?"),
+                  grams=grams)
+    bot.reply_to(message, res)
+
+
+@bot.message_handler(commands=["cam", "snapshot"])
+def cmd_cam(message):
+    if not chat_ok(message):
+        return
+    if not HA_AVAILABLE:
+        bot.reply_to(message, t("ha_no_api"))
+        return
+    try:
+        bot.send_chat_action(message.chat.id, "upload_photo")
+    except Exception:
+        pass
+    img, err = ha_snapshot()
+    if err:
+        bot.reply_to(message, err)
+        return
+    try:
+        ts = datetime.now(JERUSALEM).strftime("%H:%M:%S")
+        bot.send_photo(message.chat.id, img, caption=t("cam_ok", time=ts))
+    except Exception as e:
+        bot.reply_to(message, t("cam_error", error=str(e)))
+
+
+@bot.message_handler(commands=["light", "lamp"])
+def cmd_light(message):
+    if not chat_ok(message):
+        return
+    if not HA_AVAILABLE:
+        bot.reply_to(message, t("ha_no_api"))
+        return
+    lstate, eid = ha_light_state()
+    if not eid:
+        bot.reply_to(message, t("light_no_entity"))
+        return
+    new_state = "off" if lstate == "on" else "on"
+    err = ha_light_set(eid, new_state)
+    if err:
+        bot.reply_to(message, t("light_error", error=err))
+    else:
+        bot.reply_to(message, t("light_on") if new_state == "on" else t("light_off"))
+
+
+@bot.message_handler(commands=["pause"])
+def cmd_pause(message):
+    if not chat_ok(message):
+        return
+    with _lock:
+        if not _state["printing"]:
+            bot.reply_to(message, t("ctrl_not_printing"))
+            return
+    bot.reply_to(message, t("ctrl_pause"))
+    printer_cmd({"command": "pause"})
+
+
+@bot.message_handler(commands=["resume"])
+def cmd_resume(message):
+    if not chat_ok(message):
+        return
+    bot.reply_to(message, t("ctrl_resume"))
+    printer_cmd({"command": "resume"})
+
+
+@bot.message_handler(commands=["cancel"])
+def cmd_cancel(message):
+    if not chat_ok(message):
+        return
+    with _lock:
+        if not _state["printing"]:
+            bot.reply_to(message, t("ctrl_not_printing"))
+            return
+    markup = telebot.types.InlineKeyboardMarkup()
+    markup.add(
+        telebot.types.InlineKeyboardButton("✅ Yes, cancel", callback_data="cancel_yes"),
+        telebot.types.InlineKeyboardButton("❌ No, keep going", callback_data="cancel_no"),
+    )
+    bot.reply_to(message, t("ctrl_cancel_ask"), reply_markup=markup)
+
+
+@bot.callback_query_handler(func=lambda c: c.data in ("cancel_yes", "cancel_no"))
+def cb_cancel(call):
+    if str(call.message.chat.id) != TELEGRAM_CHAT_ID:
+        return
+    bot.answer_callback_query(call.id)
+    if call.data == "cancel_yes":
+        bot.edit_message_text(t("ctrl_cancel_yes"), call.message.chat.id, call.message.message_id)
+        printer_cmd({"command": "stop"})
+    else:
+        bot.edit_message_text(t("ctrl_cancel_no"), call.message.chat.id, call.message.message_id)
+
+
+@bot.message_handler(commands=["spools", "inventory"])
+def cmd_spools(message):
+    if not chat_ok(message):
+        return
+    if not SPOOLMAN_URL:
+        bot.reply_to(message, t("spoolman_no_url"))
+        return
+    spools = _spoolman_get("/api/v1/spool")
+    if spools is None:
+        bot.reply_to(message, "❌ Cannot reach Spoolman.")
+        return
+    if not spools:
+        bot.reply_to(message, t("spools_title") + t("spools_empty"))
+        return
+    res = t("spools_title")
+    for s in spools:
+        rem = round(s.get("remaining_weight", 0))
+        if rem <= 0:
+            continue
+        fil   = s.get("filament", {})
+        emoji = color_to_emoji(fil.get("color_hex", ""))
+        brand = fil.get("vendor", {}).get("name", "Unknown")
+        mat   = fil.get("material", "Unknown")
+        res  += t("spools_item", id=s.get("id"), emoji=emoji, brand=brand, material=mat, grams=rem)
+    if len(res) > 4000:
+        res = res[:4000] + "\n…"
+    bot.reply_to(message, res)
+
+
+@bot.message_handler(commands=["map"])
+def cmd_map(message):
+    """/map <slot 1-4> <spoolman_id>"""
+    if not chat_ok(message):
+        return
+    if not SPOOLMAN_URL:
+        bot.reply_to(message, t("spoolman_no_url"))
+        return
+    parts = message.text.strip().split()
+    if len(parts) < 3:
+        bot.reply_to(message, t("spoolman_usage"))
+        return
+    try:
+        slot = int(parts[1])
+        sid  = int(parts[2])
+        if not 1 <= slot <= 4:
+            raise ValueError("Slot out of range")
+        mapping = load_mapping()
+        mapping[str(slot - 1)] = sid
+        save_mapping(mapping)
+        bot.reply_to(message, t("spoolman_mapped", sid=sid, slot=slot))
+    except (ValueError, IndexError):
+        bot.reply_to(message, t("spoolman_usage"))
+
+
+@bot.message_handler(commands=["set"])
+def cmd_set(message):
+    """/set <slot 1-4> <brand> <material>"""
+    if not chat_ok(message):
+        return
+    if not SPOOLMAN_URL:
+        bot.reply_to(message, t("spoolman_no_url"))
+        return
+    parts = message.text.strip().split(maxsplit=3)
+    if len(parts) < 4:
+        bot.reply_to(message, t("set_usage"))
+        return
+    try:
+        slot     = int(parts[1])
+        brand    = parts[2]
+        material = parts[3]
+        if not 1 <= slot <= 4:
+            raise ValueError("Slot out of range")
+
+        ams_info = _ams_state.get(str(slot - 1), {})
+        color    = ams_info.get("color", "FFFFFF")[:6]  # strip alpha if 8-char
+
+        payload = {
+            "filament": {
+                "name":      f"{brand} {material}",
+                "material":  material,
+                "color_hex": color,
+            },
+            "remaining_weight": 1000,
+        }
+        result = _spoolman_post("/api/v1/spool", payload)
+        if not result or not result.get("id"):
+            bot.reply_to(message, t("set_fail"))
+            return
+
+        spool_id = result["id"]
+        mapping  = load_mapping()
+        mapping[str(slot - 1)] = spool_id
+        save_mapping(mapping)
+        log.info(f"Created Spoolman spool {spool_id} ({brand} {material}) → slot {slot - 1}")
+        bot.reply_to(message, t("set_ok", slot=slot))
+
+    except (ValueError, IndexError):
+        bot.reply_to(message, t("set_usage"))
+    except Exception as e:
+        log.error(f"/set error: {e}")
+        bot.reply_to(message, t("set_fail"))
+
+
+@bot.message_handler(commands=["debug"])
+def cmd_debug(message):
+    if not chat_ok(message):
+        return
+    with _lock:
+        state_copy = {k: v for k, v in _state.items() if k != "_raw_print"}
+        raw        = _state.get("_raw_print", {})
+    state_json = json.dumps(state_copy, indent=2, default=str)
+    raw_json   = json.dumps(raw,        indent=2, default=str)
+    msg = (
+        "<b>🔍 Debug Info</b>\n\n"
+        f"<b>Version:</b> {VERSION}\n"
+        f"<b>HA API:</b> {'✅ enabled' if HA_AVAILABLE else '❌ disabled'}\n"
+        f"<b>Spoolman:</b> {SPOOLMAN_URL or '❌ not configured'}\n\n"
+        "<b>State:</b>\n<pre>" + html.escape(state_json) + "</pre>\n\n"
+        "<b>Last Raw MQTT:</b>\n<pre>" + html.escape(raw_json) + "</pre>"
+    )
+    if len(msg) > 4000:
+        msg = msg[:4000] + "\n… (truncated)"
+    bot.reply_to(message, msg, parse_mode="HTML")
+
+
+# ── MQTT Connection ───────────────────────────────────────────────────────────
+def _make_client() -> mqtt.Client:
     client = mqtt.Client()
-    client.username_pw_set("bblp", token)
+    client.on_connect    = on_connect
+    client.on_disconnect = on_disconnect
+    client.on_message    = on_message
     client.tls_set(cert_reqs=ssl.CERT_NONE)
     client.tls_insecure_set(True)
-    client.on_connect = on_connect
-    client.on_message = on_message
-
-    broker = "us.mqtt.bambulab.com"
-    port   = 8883
-    log.info(f"Connecting to Cloud MQTT {broker}:{port} ...")
-    client.connect(broker, port, keepalive=60)
     return client
 
-def connect_local_mqtt():
-    client = mqtt.Client()
-    client.username_pw_set("bblp", PRINTER_PASSWORD)
-    client.tls_set(cert_reqs=ssl.CERT_NONE)
-    client.tls_insecure_set(True)
-    client.on_connect = on_connect
-    client.on_message = on_message
 
-    log.info(f"Connecting to local MQTT {PRINTER_IP}:8883 ...")
+def _connect_local():
+    log.info(f"Testing local MQTT at {PRINTER_IP}:8883 …")
+    try:
+        s = socket.create_connection((PRINTER_IP, 8883), timeout=5)
+        s.close()
+    except Exception as e:
+        log.warning(f"Local MQTT port not reachable: {e}")
+        return None
+    client = _make_client()
+    client.username_pw_set("bblp", PRINTER_PASSWORD)
+    log.info("Connecting via LOCAL MQTT…")
     client.connect(PRINTER_IP, 8883, keepalive=60)
     return client
 
-# ── Main ──────────────────────────────────────────────────
-import socket
-def main():
-    log.info(f"Bambu Monitor Add-on starting... version={VERSION}")
-    
-    # Start Telegram polling thread
-    t_bot = threading.Thread(target=bot.infinity_polling, daemon=True)
-    t_bot.start()
 
-    global _mqtt_client
-    client = None
+def _connect_cloud():
+    if not BAMBU_USERNAME or not BAMBU_PASSWORD_ or "example.com" in BAMBU_USERNAME:
+        msg = (
+            "❌ Local MQTT unreachable and Cloud credentials not configured.\n"
+            "Check printer_ip and bambu_username / bambu_password in Add-on settings."
+        )
+        log.error(msg)
+        tg_send(msg)
+        return None
 
-    # Try local MQTT first, fall back to Cloud MQTT
+    log.info("Fetching Bambu Cloud token…")
     try:
-        log.info(f"Testing local MQTT reachability at {PRINTER_IP}:8883 ...")
-        sock = socket.create_connection((PRINTER_IP, 8883), timeout=5)
-        sock.close()
-        log.info("Local MQTT port is open — connecting via LOCAL MQTT")
-        client = connect_local_mqtt()
+        r = requests.post(
+            "https://api.bambulab.com/v1/user-service/user/login",
+            json={"account": BAMBU_USERNAME, "password": BAMBU_PASSWORD_},
+            timeout=15,
+        )
+        data  = r.json()
+        token = data.get("accessToken") or data.get("token")
+        if not token:
+            log.error(f"No token in response: {data}")
+            tg_send("❌ Failed to get Bambu Cloud token. Check bambu_username and bambu_password.")
+            return None
     except Exception as e:
-        log.warning(f"Local MQTT not reachable ({e}) — trying Cloud MQTT...")
-        if not BAMBU_USERNAME or not BAMBU_PASSWORD or "example.com" in BAMBU_USERNAME:
-            msg = "❌ Local MQTT unavailable and Cloud credentials are not set. Check printer_ip and bambu_username/password in add-on config."
-            log.error(msg)
-            send_telegram(msg)
-        else:
-            client = connect_cloud_mqtt()
+        log.error(f"Cloud token fetch failed: {e}")
+        tg_send(f"❌ Bambu Cloud login failed: {e}")
+        return None
 
-    _mqtt_client = client
+    client = _make_client()
+    client.username_pw_set("bblp", token)
+    log.info("Connecting via CLOUD MQTT…")
+    client.connect("us.mqtt.bambulab.com", 8883, keepalive=60)
+    return client
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+def main():
+    log.info(f"Data dir: {DATA_DIR}")
+    _restore_state()
+
+    # Start Telegram polling in background thread
+    threading.Thread(target=bot.infinity_polling, daemon=True, name="tg-polling").start()
+    log.info("Telegram polling started")
+
+    # Try local MQTT first, fall back to Bambu Cloud
+    global _mqtt_client
+    client = _connect_local() or _connect_cloud()
 
     if not client:
-        err = "❌ Could not connect to printer via local or cloud MQTT. Check HA Add-on logs."
-        log.error(err)
-        send_telegram(err)
-        sys.exit(err)
+        msg = "❌ Could not connect to printer MQTT. Check HA Add-on logs."
+        log.error(msg)
+        tg_send(msg)
+        sys.exit(1)
 
-    # Attach disconnect handler for auto-reconnect
-    client.on_disconnect = on_disconnect
-
+    _mqtt_client = client
+    log.info("Entering MQTT loop…")
     try:
         client.loop_forever(reconnect_delay_max=30)
     except KeyboardInterrupt:
-        send_telegram(t("disconnected"))
+        tg_send(t("disconnected"))
         log.info("Stopped by user.")
+
 
 if __name__ == "__main__":
     main()

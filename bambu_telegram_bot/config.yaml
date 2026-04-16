@@ -1,7 +1,7 @@
 name: "Bambu Telegram Monitor"
-version: "1.1.0"
+version: "2.0.0"
 slug: "bambu_telegram_monitor"
-description: "Monitors Bambu Lab printers (A1/P1/X1) and sends notifications via Telegram."
+description: "Monitors Bambu Lab A1/P1/X1 printers and sends Telegram notifications. Supports Spoolman, HA camera, light control, and remote print management."
 url: "https://github.com/raziel6453/bambu_telegram_bot"
 arch:
   - aarch64
@@ -19,9 +19,11 @@ options:
   bambu_password: "YOUR_BAMBU_ACCOUNT_PASS"
   telegram_token: "YOUR_TELEGRAM_BOT_TOKEN"
   telegram_chat_id: "YOUR_CHAT_ID"
+  spoolman_url: ""
   ha_camera_entity: ""
   ha_light_entity: ""
   ha_weight_entity: ""
+  low_stock_threshold: 100
   language: "he"
 schema:
   printer_ip: str
@@ -35,4 +37,5 @@ schema:
   ha_camera_entity: str?
   ha_light_entity: str?
   ha_weight_entity: str?
+  low_stock_threshold: int?
   language: "list(he|en)"
