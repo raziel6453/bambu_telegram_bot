@@ -6,18 +6,19 @@ A Telegram bot that monitors your **Bambu Lab 3D printer** (A1 / P1 / X1 series)
 
 ## ✨ Features
 
-- 📡 **Real-time MQTT monitoring** — connects directly to your printer (local network or Bambu Cloud fallback)
-- 📸 **Camera snapshots on every alert** — print start, progress milestones, and completion all include a live photo
-- 📬 **Smart notifications** — print start, progress (25/50/75%), completion, failure, low-filament, and new spool detection
-- 🎛️ **Remote control** — pause, resume, and cancel prints directly from Telegram
-- 📋 **Print history** — every completed print is logged; view the last 10 with `/history`
-- 🧵 **Spoolman integration** — auto-deducts usage on completion, alerts when a spool runs low, and creates new spools on demand
-- 🆕 **AMS filament detection** — notifies you when a new spool is loaded and helps register it in Spoolman
-- 🔍 **Live status** — `/status` polls the printer in real-time with weight, remaining filament from Spoolman, ETA, and a snapshot
-- 💡 **Light control** — `/light` toggles your printer lamp (requires HA integration)
-- ⚖️ **Auto weight discovery** — auto-detects the HA weight sensor for printers that don't broadcast weight over MQTT (e.g. A1)
-- 🌐 **Multi-language** — Hebrew (`he`) and English (`en`)
-- 🐳 **Docker-ready** — runs as a Home Assistant add-on or standalone container
+- 📡 **Bulletproof MQTT** — Prioritizes local network connections with automatic failover to Bambu Cloud and auto-reconnects.
+- 💾 **State Persistence** — Survives Add-on restarts. Recovers mid-print state silently without duplicate start alerts.
+- 📸 **Camera snapshots** — included on print start, progress milestones (25/50/75%), and completion.
+- 📬 **Smart notifications** — print start, progress, completion, failure, low-filament, and new spool detection.
+- 🎛️ **Remote control** — pause, resume, and cancel prints directly from Telegram.
+- 📋 **Print history** — every completed print is logged; view the last 10 with `/history`.
+- 🧵 **Spoolman integration** — auto-deducts usage on completion, alerts when a spool runs low, and creates new spools on demand.
+- 🆕 **AMS filament detection** — notifies you when a new spool is loaded and helps register it in Spoolman.
+- 🔍 **Live status** — `/status` polls in real-time with weight, Spoolman stock, accurate ETAs (Jerusalem TZ), and a snapshot.
+- ⚖️ **Auto HA Discovery** — auto-detects Home Assistant weight sensor, camera, and light entities dynamically.
+- 💡 **Light control** — `/light` toggles your printer lamp (via HA integration).
+- 🌐 **Multi-language** — Hebrew (`he`) and English (`en`).
+- 🐳 **Docker-ready** — runs seamlessly as a Home Assistant add-on or standalone Python script.
 
 ---
 
