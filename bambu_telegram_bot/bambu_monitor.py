@@ -1088,7 +1088,7 @@ def on_message(client, userdata, msg):
         if filename:
             _state["filename"] = filename
 
-        # Print started
+        # Print started (fresh start: transition from non-RUNNING state)
         if gcode_state == "RUNNING" and prev_state in ("PREPARE", "IDLE", "FINISH", ""):
             _state["printing"]   = True
             _state["last_milestone"] = 0
@@ -1101,7 +1101,6 @@ def on_message(client, userdata, msg):
             else:
                 _state["start_time"] = datetime.now()
 
-            
             # Optionally capture spool start weight
             tray = _state.get("tray_now", 255)
             if SPOOLMAN_URL and tray != 255:
@@ -1123,6 +1122,23 @@ def on_message(client, userdata, msg):
             w_disp = f"{float(_state['print_weight']):.1f}g"
             
             send_telegram_with_photo(t("print_start", filename=filename or "–", weight=w_disp, eta=eta, finish=_finish_time(rem_mins)))
+
+        # Mid-print reconnect recovery: bot restarted while printer was already printing.
+        # gcode_state is RUNNING but printing flag is False — silently recover without re-sending start notification.
+        elif gcode_state == "RUNNING" and not was_printing:
+            _state["printing"] = True
+            log.info(f"Mid-print reconnect detected at {mc_percent}% — recovering state silently.")
+            if _state.get("start_time") is None and mc_percent and mc_remaining:
+                try:
+                    total_est_mins = mc_remaining / (1 - (mc_percent / 100.0))
+                    elapsed_mins = total_est_mins * (mc_percent / 100.0)
+                    _state["start_time"] = datetime.now() - timedelta(minutes=elapsed_mins)
+                except Exception:
+                    _state["start_time"] = datetime.now()
+            # Set last_milestone so we don't fire already-passed progress alerts
+            for m in (25, 50, 75):
+                if mc_percent >= m:
+                    _state["last_milestone"] = m
 
         # Print finished
         elif gcode_state == "FINISH" and was_printing:
