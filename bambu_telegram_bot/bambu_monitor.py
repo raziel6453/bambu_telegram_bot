@@ -1009,6 +1009,14 @@ def handle_debug(message):
         bot.reply_to(message, f"❌ Debug failed: {e}")
 
 # ── MQTT callbacks ────────────────────────────────────────
+RC_CODES = {
+    1: "Incorrect protocol version",
+    2: "Invalid client identifier",
+    3: "Server unavailable",
+    4: "Bad username or password",
+    5: "Not authorised",
+}
+
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
         log.info("Connected to printer MQTT")
@@ -1016,8 +1024,16 @@ def on_connect(client, userdata, flags, rc):
         client.subscribe(topic)
         log.info(f"Subscribed to {topic}")
         send_telegram(t("connected"))
+        # Request a full state dump immediately after connecting
+        threading.Timer(2.0, request_pushall).start()
     else:
-        log.error(f"MQTT connect failed, rc={rc}")
+        reason = RC_CODES.get(rc, f"Unknown error (rc={rc})")
+        log.error(f"MQTT connect failed: {reason} (rc={rc})")
+        send_telegram(f"❌ MQTT connection failed: {reason}")
+
+def on_disconnect(client, userdata, rc):
+    if rc != 0:
+        log.warning(f"MQTT disconnected unexpectedly (rc={rc}). Will auto-reconnect.")
 
 def on_message(client, userdata, msg):
     try:
@@ -1303,30 +1319,44 @@ def connect_local_mqtt():
 # ── Main ──────────────────────────────────────────────────
 import socket
 def main():
-    log.info("Bambu Monitor Add-on starting...")
+    log.info(f"Bambu Monitor Add-on starting... version={VERSION}")
     
     # Start Telegram polling thread
     t_bot = threading.Thread(target=bot.infinity_polling, daemon=True)
     t_bot.start()
 
-    # Try local first, fall back to cloud
     global _mqtt_client
     client = None
+
+    # Try local MQTT first, fall back to Cloud MQTT
     try:
+        log.info(f"Testing local MQTT reachability at {PRINTER_IP}:8883 ...")
         sock = socket.create_connection((PRINTER_IP, 8883), timeout=5)
         sock.close()
+        log.info("Local MQTT port is open — connecting via LOCAL MQTT")
         client = connect_local_mqtt()
-        log.info("Using LOCAL MQTT")
-    except Exception:
-        log.info("Local MQTT not reachable – trying Cloud MQTT...")
-        client = connect_cloud_mqtt()
+    except Exception as e:
+        log.warning(f"Local MQTT not reachable ({e}) — trying Cloud MQTT...")
+        if not BAMBU_USERNAME or not BAMBU_PASSWORD or "example.com" in BAMBU_USERNAME:
+            msg = "❌ Local MQTT unavailable and Cloud credentials are not set. Check printer_ip and bambu_username/password in add-on config."
+            log.error(msg)
+            send_telegram(msg)
+        else:
+            client = connect_cloud_mqtt()
+
     _mqtt_client = client
 
     if not client:
-        sys.exit("Could not connect to printer via local or cloud MQTT.")
+        err = "❌ Could not connect to printer via local or cloud MQTT. Check HA Add-on logs."
+        log.error(err)
+        send_telegram(err)
+        sys.exit(err)
+
+    # Attach disconnect handler for auto-reconnect
+    client.on_disconnect = on_disconnect
 
     try:
-        client.loop_forever()
+        client.loop_forever(reconnect_delay_max=30)
     except KeyboardInterrupt:
         send_telegram(t("disconnected"))
         log.info("Stopped by user.")
