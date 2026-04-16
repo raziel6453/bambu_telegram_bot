@@ -1273,7 +1273,11 @@ def cmd_debug(message):
 
 # ── MQTT Connection ───────────────────────────────────────────────────────────
 def _make_client() -> mqtt.Client:
-    client = mqtt.Client()
+    # Handle paho-mqtt v1 vs v2 API differences gracefully
+    try:
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+    except AttributeError:
+        client = mqtt.Client()
     client.on_connect    = on_connect
     client.on_disconnect = on_disconnect
     client.on_message    = on_message
@@ -1354,7 +1358,8 @@ def main():
     _mqtt_client = client
     log.info("Entering MQTT loop…")
     try:
-        client.loop_forever(reconnect_delay_max=30)
+        # reconnect_delay_max added in paho 2.x — use plain loop_forever for compat
+        client.loop_forever()
     except KeyboardInterrupt:
         tg_send(t("disconnected"))
         log.info("Stopped by user.")
