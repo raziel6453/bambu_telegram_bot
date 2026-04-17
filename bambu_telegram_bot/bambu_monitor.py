@@ -167,7 +167,7 @@ STRINGS = {
         "help": (
             "🖨️ *Bambu Telegram Monitor — פקודות:*\n\n"
             "📊 *סטטוס*\n"
-            "/status — סטטוס נוכחי \\+ תמונה\n"
+            "/status — סטטוס נוכחי + תמונה\n"
             "/ams — מצב מגשי AMS\n"
             "/history — 10 הדפסות אחרונות\n\n"
             "🎥 *מצלמה*\n"
@@ -175,11 +175,11 @@ STRINGS = {
             "⚡ *שליטה מרחוק*\n"
             "/pause — עצירת הדפסה\n"
             "/resume — המשך הדפסה\n"
-            "/cancel — ביטול הדפסה \\(עם אישור\\)\n\n"
+            "/cancel — ביטול הדפסה (עם אישור)\n\n"
             "📦 *Spoolman*\n"
             "/spools — רשימת ספולים\n"
             "/map <סלוט> <id> — שיוך סלוט לספול\n"
-            "/set <סלוט> <מותג> <חומר> — ספול חדש \\+ שיוך\n\n"
+            "/set <סלוט> <מותג> <חומר> — ספול חדש + שיוך\n\n"
             "🔦 *כלים*\n"
             "/light — הדלקה/כיבוי נורה\n"
             "/debug — נתוני MQTT גולמיים\n"
@@ -244,19 +244,19 @@ STRINGS = {
         "help": (
             "🖨️ *Bambu Telegram Monitor — Commands:*\n\n"
             "📊 *Status*\n"
-            "/status — Current status \\+ camera snapshot\n"
+            "/status — Current status + camera snapshot\n"
             "/ams — AMS slot status\n"
             "/history — Last 10 completed prints\n\n"
             "🎥 *Camera*\n"
-            "/cam — Live snapshot \\(requires HA\\)\n\n"
+            "/cam — Live snapshot (requires HA)\n\n"
             "⚡ *Remote Control*\n"
             "/pause — Pause current print\n"
             "/resume — Resume paused print\n"
-            "/cancel — Cancel print \\(asks confirmation\\)\n\n"
+            "/cancel — Cancel print (asks confirmation)\n\n"
             "📦 *Spoolman*\n"
             "/spools — List inventory\n"
             "/map <slot> <id> — Map slot to existing spool\n"
-            "/set <slot> <brand> <material> — Create new spool \\& map slot\n\n"
+            "/set <slot> <brand> <material> — Create new spool & map slot\n\n"
             "🔦 *Tools*\n"
             "/light — Toggle printer lamp\n"
             "/debug — Raw MQTT data for troubleshooting\n"
@@ -913,7 +913,7 @@ def on_message(client, userdata, msg):
 def cmd_help(message):
     if not chat_ok(message):
         return
-    bot.reply_to(message, t("help"), parse_mode="MarkdownV2")
+    bot.reply_to(message, t("help"), parse_mode="Markdown")
 
 
 @bot.message_handler(commands=["status"])
