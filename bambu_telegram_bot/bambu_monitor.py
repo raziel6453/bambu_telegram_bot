@@ -156,8 +156,8 @@ STRINGS = {
         "status_paused":     "⏸️ *ההדפסה מושהית*\n📄 קובץ: `{filename}`\n📊 {pct}%\n{light}",
         "status_idle":       "💤 המדפסת במצב המתנה.\n{light}",
         "ams_title":         "📦 <b>סטטוס AMS:</b>\n",
-        "ams_slot_spoolman": "סלוט {slot}: {emoji} {brand} {material} {filname} <code>{color}</code> — {grams}g (Spoolman)\n",
-        "ams_slot_native":   "סלוט {slot}: {emoji} {ftype} ({brand}) <code>{color}</code> — {grams}g\n",
+        "ams_slot_spoolman": "סלוט {slot}: {emoji} {brand} {material} {filname} {color_name} — {grams}g (Spoolman)\n",
+        "ams_slot_native":   "סלוט {slot}: {emoji} {ftype} ({brand}) {color_name} — {grams}g\n",
         "ams_slot_empty":    "סלוט {slot}: ❌ ריק\n",
         "ams_no_data":       "❌ אין נתוני AMS עדיין.\nשלח /debug לבדוק חיבור MQTT.",
         "ask_spool_id":      "👇 בחר ספול מ-Spoolman כדי לשייך לסלוט {slot}:",
@@ -235,8 +235,8 @@ STRINGS = {
         "status_paused":     "⏸️ *Print is paused*\n📄 File: `{filename}`\n📊 {pct}%\n{light}",
         "status_idle":       "💤 Printer is idle.\n{light}",
         "ams_title":         "📦 <b>AMS Status:</b>\n",
-        "ams_slot_spoolman": "Slot {slot}: {emoji} {brand} {material} {filname} <code>{color}</code> — {grams}g (Spoolman)\n",
-        "ams_slot_native":   "Slot {slot}: {emoji} {ftype} ({brand}) <code>{color}</code> — {grams}g\n",
+        "ams_slot_spoolman": "Slot {slot}: {emoji} {brand} {material} {filname} {color_name} — {grams}g (Spoolman)\n",
+        "ams_slot_native":   "Slot {slot}: {emoji} {ftype} ({brand}) {color_name} — {grams}g\n",
         "ams_slot_empty":    "Slot {slot}: ❌ Empty\n",
         "ams_no_data":       "❌ No AMS data yet.\nSend /debug to check MQTT connection.",
         "ask_spool_id":      "👇 Choose a Spoolman spool to map to Slot {slot}:",
@@ -320,6 +320,42 @@ def color_to_emoji(hexcode: str) -> str:
     except Exception:
         pass
     return "🧵"
+
+
+def hex_to_color_name(hexcode: str) -> str:
+    if not hexcode or len(hexcode) < 6:
+        return ""
+    h = hexcode.replace("#", "")[:6]
+    try:
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        
+        palette = {
+            "White": (255, 255, 255), "Black": (0, 0, 0), "Gray": (128, 128, 128),
+            "Red": (255, 0, 0), "Green": (0, 255, 0), "Blue": (0, 0, 255),
+            "Yellow": (255, 255, 0), "Orange": (255, 165, 0), "Purple": (128, 0, 128),
+            "Cyan": (0, 255, 255), "Magenta": (255, 0, 255), "Pink": (255, 192, 203),
+            "Brown": (165, 42, 42)
+        }
+        
+        best_name = ""
+        min_dist = float('inf')
+        for name, (pr, pg, pb) in palette.items():
+            dist = (r - pr)**2 + (g - pg)**2 + (b - pb)**2
+            if dist < min_dist:
+                min_dist = dist
+                best_name = name
+                
+        if LANGUAGE == "he":
+            he_map = {
+                "White": "לבן", "Black": "שחור", "Gray": "אפור", "Red": "אדום",
+                "Green": "ירוק", "Blue": "כחול", "Yellow": "צהוב", "Orange": "כתום",
+                "Purple": "סגול", "Cyan": "טורקיז", "Magenta": "מגנטה", "Pink": "ורוד",
+                "Brown": "חום"
+            }
+            return he_map.get(best_name, best_name)
+        return best_name
+    except Exception:
+        return ""
 
 
 def fmt_mins(mins: int) -> str:
@@ -1049,13 +1085,14 @@ def cmd_ams(message):
                     fil   = data.get("filament", {})
                     color_hex = fil.get("color_hex", "")
                     emoji = color_to_emoji(color_hex)
-                    hex_str = f"#{color_hex[:6]}" if len(color_hex) >= 6 else ""
+                    cname = hex_to_color_name(color_hex)
+                    color_str = f"({cname})" if cname else ""
                     brand = fil.get("vendor", {}).get("name", "Unknown")
                     mat   = fil.get("material", "")
                     filname = fil.get("name", "")
                     grams = round(data.get("remaining_weight", 0))
                     res  += t("ams_slot_spoolman", slot=slot_num, emoji=emoji,
-                              brand=brand, material=mat, filname=filname, color=hex_str, grams=grams)
+                              brand=brand, material=mat, filname=filname, color_name=color_str, grams=grams)
                 else:
                     res += t("ams_slot_empty", slot=slot_num)
 
@@ -1067,9 +1104,10 @@ def cmd_ams(message):
                 else:
                     color_hex = slot.get("color", "")
                     emoji = color_to_emoji(color_hex)
-                    hex_str = f"#{color_hex[:6]}" if len(color_hex) >= 6 else ""
+                    cname = hex_to_color_name(color_hex)
+                    color_str = f"({cname})" if cname else ""
                     res  += t("ams_slot_native", slot=slot_num, emoji=emoji,
-                              ftype=slot.get("type", ""), brand=slot.get("brand", ""), color=hex_str,
+                              ftype=slot.get("type", ""), brand=slot.get("brand", ""), color_name=color_str,
                               grams=slot.get("remain", 0) * 10)
             else:
                 res += t("ams_slot_empty", slot=slot_num)
