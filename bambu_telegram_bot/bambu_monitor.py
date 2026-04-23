@@ -106,6 +106,30 @@ log.info(f"Language: {LANGUAGE}")
 # ── Telegram Init ─────────────────────────────────────────────────────────────
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
+def setup_bot_commands():
+    cmds = [
+        telebot.types.BotCommand("status", "Current status + camera snapshot"),
+        telebot.types.BotCommand("ams", "AMS slot status"),
+        telebot.types.BotCommand("history", "Last 10 completed prints"),
+        telebot.types.BotCommand("cam", "Live camera snapshot"),
+        telebot.types.BotCommand("pause", "Pause current print"),
+        telebot.types.BotCommand("resume", "Resume paused print"),
+        telebot.types.BotCommand("cancel", "Cancel print (asks confirmation)"),
+        telebot.types.BotCommand("spools", "List Spoolman inventory"),
+        telebot.types.BotCommand("map", "Map slot to existing spool"),
+        telebot.types.BotCommand("set", "Create new spool & map slot"),
+        telebot.types.BotCommand("light", "Toggle printer lamp"),
+        telebot.types.BotCommand("debug", "Raw MQTT data"),
+        telebot.types.BotCommand("help", "Show this menu"),
+    ]
+    try:
+        bot.set_my_commands(cmds)
+        log.info("Registered Telegram bot commands menu.")
+    except Exception as e:
+        log.warning(f"Could not register bot commands: {e}")
+
+setup_bot_commands()
+
 
 # ── Localisation ─────────────────────────────────────────────────────────────
 STRINGS = {
@@ -140,11 +164,11 @@ STRINGS = {
         "spools_item":       "#{id} | {emoji} {brand} {material} | {grams}g\n",
         "spools_empty":      "המלאי ריק.",
         "spoolman_mapped":   "✅ Spoolman ID {sid} שויך לסלוט {slot}.",
-        "spoolman_usage":    "❌ שימוש: /map <סלוט 1-4> <spoolman_id>",
+        "spoolman_usage":    "❌ שימוש: /map [סלוט 1-4] [spoolman_id]",
         "spoolman_no_url":   "❌ Spoolman לא הוגדר בהגדרות ה-Add-on.",
         "set_ok":            "✅ ספול חדש נוצר ב-Spoolman ושויך לסלוט {slot}.",
         "set_fail":          "❌ שגיאה ביצירת ספול.",
-        "set_usage":         "❌ שימוש: /set <סלוט> <מותג> <חומר>\nלדוגמא: /set 1 Bambu PLA",
+        "set_usage":         "❌ שימוש: /set [סלוט] [מותג] [חומר]\nלדוגמא: /set 1 Bambu PLA",
         "low_stock":         "⚠️ ספול #{sid} ({label}) על סיום — נותר {grams}g בלבד!",
         "low_filament":      "⚠️ מעט חוט בסלוט {slot}! נותר ~{grams}g",
         "history_title":     "🗒️ *היסטוריית הדפסות:*\n",
@@ -165,22 +189,22 @@ STRINGS = {
         "ctrl_cancel_no":    "✅ ביטול בוטל — ההדפסה ממשיכת.",
         "ctrl_not_printing": "❌ אין הדפסה פעילה כעת.",
         "help": (
-            "🖨️ *Bambu Telegram Monitor — פקודות:*\n\n"
-            "📊 *סטטוס*\n"
+            "🖨️ <b>Bambu Telegram Monitor — פקודות:</b>\n\n"
+            "📊 <b>סטטוס</b>\n"
             "/status — סטטוס נוכחי + תמונה\n"
             "/ams — מצב מגשי AMS\n"
             "/history — 10 הדפסות אחרונות\n\n"
-            "🎥 *מצלמה*\n"
+            "🎥 <b>מצלמה</b>\n"
             "/cam — צילום חי\n\n"
-            "⚡ *שליטה מרחוק*\n"
+            "⚡ <b>שליטה מרחוק</b>\n"
             "/pause — עצירת הדפסה\n"
             "/resume — המשך הדפסה\n"
             "/cancel — ביטול הדפסה (עם אישור)\n\n"
-            "📦 *Spoolman*\n"
+            "📦 <b>Spoolman</b>\n"
             "/spools — רשימת ספולים\n"
-            "/map <סלוט> <id> — שיוך סלוט לספול\n"
-            "/set <סלוט> <מותג> <חומר> — ספול חדש + שיוך\n\n"
-            "🔦 *כלים*\n"
+            "/map [סלוט] [id] — שיוך סלוט לספול\n"
+            "/set [סלוט] [מותג] [חומר] — ספול חדש + שיוך\n\n"
+            "🔦 <b>כלים</b>\n"
             "/light — הדלקה/כיבוי נורה\n"
             "/debug — נתוני MQTT גולמיים\n"
             "/help — תפריט זה"
@@ -217,11 +241,11 @@ STRINGS = {
         "spools_item":       "#{id} | {emoji} {brand} {material} | {grams}g remaining\n",
         "spools_empty":      "Inventory is empty.",
         "spoolman_mapped":   "✅ Spoolman ID {sid} mapped to Slot {slot}.",
-        "spoolman_usage":    "❌ Usage: /map <slot 1-4> <spoolman_id>",
+        "spoolman_usage":    "❌ Usage: /map [slot 1-4] [spoolman_id]",
         "spoolman_no_url":   "❌ Spoolman is not configured in Add-on settings.",
         "set_ok":            "✅ New spool created in Spoolman and mapped to Slot {slot}.",
         "set_fail":          "❌ Failed to create spool.",
-        "set_usage":         "❌ Usage: /set <slot> <brand> <material>\nExample: /set 1 Bambu PLA",
+        "set_usage":         "❌ Usage: /set [slot] [brand] [material]\nExample: /set 1 Bambu PLA",
         "low_stock":         "⚠️ Spool #{sid} ({label}) is running low — only {grams}g left!",
         "low_filament":      "⚠️ Low filament in Slot {slot}! ~{grams}g remaining",
         "history_title":     "🗒️ *Print History:*\n",
@@ -242,22 +266,22 @@ STRINGS = {
         "ctrl_cancel_no":    "✅ Cancel aborted — print continues.",
         "ctrl_not_printing": "❌ No print is currently active.",
         "help": (
-            "🖨️ *Bambu Telegram Monitor — Commands:*\n\n"
-            "📊 *Status*\n"
+            "🖨️ <b>Bambu Telegram Monitor — Commands:</b>\n\n"
+            "📊 <b>Status</b>\n"
             "/status — Current status + camera snapshot\n"
             "/ams — AMS slot status\n"
             "/history — Last 10 completed prints\n\n"
-            "🎥 *Camera*\n"
+            "🎥 <b>Camera</b>\n"
             "/cam — Live snapshot (requires HA)\n\n"
-            "⚡ *Remote Control*\n"
+            "⚡ <b>Remote Control</b>\n"
             "/pause — Pause current print\n"
             "/resume — Resume paused print\n"
             "/cancel — Cancel print (asks confirmation)\n\n"
-            "📦 *Spoolman*\n"
+            "📦 <b>Spoolman</b>\n"
             "/spools — List inventory\n"
-            "/map <slot> <id> — Map slot to existing spool\n"
-            "/set <slot> <brand> <material> — Create new spool & map slot\n\n"
-            "🔦 *Tools*\n"
+            "/map [slot] [id] — Map slot to existing spool\n"
+            "/set [slot] [brand] [material] — Create new spool & map slot\n\n"
+            "🔦 <b>Tools</b>\n"
             "/light — Toggle printer lamp\n"
             "/debug — Raw MQTT data for troubleshooting\n"
             "/help — Show this menu"
@@ -913,7 +937,7 @@ def on_message(client, userdata, msg):
 def cmd_help(message):
     if not chat_ok(message):
         return
-    bot.reply_to(message, t("help"), parse_mode="Markdown")
+    bot.reply_to(message, t("help"), parse_mode="HTML")
 
 
 @bot.message_handler(commands=["status"])
