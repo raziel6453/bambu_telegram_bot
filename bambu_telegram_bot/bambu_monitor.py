@@ -117,7 +117,7 @@ def setup_bot_commands():
         telebot.types.BotCommand("cancel", "Cancel print (asks confirmation)"),
         telebot.types.BotCommand("spools", "List Spoolman inventory"),
         telebot.types.BotCommand("map", "Map slot to existing spool"),
-        telebot.types.BotCommand("set", "Create new spool & map slot"),
+        telebot.types.BotCommand("set", "Create new spool and map slot"),
         telebot.types.BotCommand("light", "Toggle printer lamp"),
         telebot.types.BotCommand("debug", "Raw MQTT data"),
         telebot.types.BotCommand("help", "Show this menu"),
@@ -280,7 +280,7 @@ STRINGS = {
             "📦 <b>Spoolman</b>\n"
             "/spools — List inventory\n"
             "/map [slot] [id] — Map slot to existing spool\n"
-            "/set [slot] [brand] [material] — Create new spool & map slot\n\n"
+            "/set [slot] [brand] [material] — Create new spool and map slot\n\n"
             "🔦 <b>Tools</b>\n"
             "/light — Toggle printer lamp\n"
             "/debug — Raw MQTT data for troubleshooting\n"
