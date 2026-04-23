@@ -156,11 +156,11 @@ STRINGS = {
         "status_paused":     "⏸️ *ההדפסה מושהית*\n📄 קובץ: `{filename}`\n📊 {pct}%\n{light}",
         "status_idle":       "💤 המדפסת במצב המתנה.\n{light}",
         "ams_title":         "📦 <b>סטטוס AMS:</b>\n",
-        "ams_slot_spoolman": "סלוט {slot}: {emoji} {brand} {material} <code>{color}</code> — {grams}g (Spoolman)\n",
+        "ams_slot_spoolman": "סלוט {slot}: {emoji} {brand} {material} {filname} <code>{color}</code> — {grams}g (Spoolman)\n",
         "ams_slot_native":   "סלוט {slot}: {emoji} {ftype} ({brand}) <code>{color}</code> — {grams}g\n",
         "ams_slot_empty":    "סלוט {slot}: ❌ ריק\n",
         "ams_no_data":       "❌ אין נתוני AMS עדיין.\nשלח /debug לבדוק חיבור MQTT.",
-        "ask_spool_id":      "✏️ הקלד את ה-ID מ-Spoolman כדי לשייך לסלוט {slot}:",
+        "ask_spool_id":      "👇 בחר ספול מ-Spoolman כדי לשייך לסלוט {slot}:",
         "invalid_number":    "❌ שגיאה: נא להקליד מספר חוקי.",
         "spools_title":      "📦 *מלאי Spoolman:*\n",
         "spools_item":       "#{id} | {emoji} {brand} {material} | {grams}g\n",
@@ -235,11 +235,11 @@ STRINGS = {
         "status_paused":     "⏸️ *Print is paused*\n📄 File: `{filename}`\n📊 {pct}%\n{light}",
         "status_idle":       "💤 Printer is idle.\n{light}",
         "ams_title":         "📦 <b>AMS Status:</b>\n",
-        "ams_slot_spoolman": "Slot {slot}: {emoji} {brand} {material} <code>{color}</code> — {grams}g (Spoolman)\n",
+        "ams_slot_spoolman": "Slot {slot}: {emoji} {brand} {material} {filname} <code>{color}</code> — {grams}g (Spoolman)\n",
         "ams_slot_native":   "Slot {slot}: {emoji} {ftype} ({brand}) <code>{color}</code> — {grams}g\n",
         "ams_slot_empty":    "Slot {slot}: ❌ Empty\n",
         "ams_no_data":       "❌ No AMS data yet.\nSend /debug to check MQTT connection.",
-        "ask_spool_id":      "✏️ Type the Spoolman ID to map to Slot {slot}:",
+        "ask_spool_id":      "👇 Choose a Spoolman spool to map to Slot {slot}:",
         "invalid_number":    "❌ Error: Please type a valid number.",
         "spools_title":      "📦 *Spoolman Inventory:*\n",
         "spools_item":       "#{id} | {emoji} {brand} {material} | {grams}g remaining\n",
@@ -1052,9 +1052,10 @@ def cmd_ams(message):
                     hex_str = f"#{color_hex[:6]}" if len(color_hex) >= 6 else ""
                     brand = fil.get("vendor", {}).get("name", "Unknown")
                     mat   = fil.get("material", "")
+                    filname = fil.get("name", "")
                     grams = round(data.get("remaining_weight", 0))
                     res  += t("ams_slot_spoolman", slot=slot_num, emoji=emoji,
-                              brand=brand, material=mat, color=hex_str, grams=grams)
+                              brand=brand, material=mat, filname=filname, color=hex_str, grams=grams)
                 else:
                     res += t("ams_slot_empty", slot=slot_num)
 
@@ -1086,23 +1087,61 @@ def cb_map(call):
     if not chat_ok(call.message):
         return
     slot = call.data.split("_")[1]
-    msg = bot.send_message(call.message.chat.id, t("ask_spool_id", slot=slot), parse_mode="HTML")
-    bot.register_next_step_handler(msg, _process_map_slot, slot)
-    bot.answer_callback_query(call.id)
-
-def _process_map_slot(message, slot):
-    if not chat_ok(message):
-        return
-    try:
-        spool_id = int(message.text.strip())
-    except ValueError:
-        bot.send_message(message.chat.id, t("invalid_number"), parse_mode="HTML")
+    
+    if not SPOOLMAN_URL:
+        bot.answer_callback_query(call.id, "Spoolman not configured.")
         return
         
+    spools = _spoolman_get("/api/v1/spool")
+    if not spools:
+        bot.answer_callback_query(call.id, "No spools found in Spoolman.")
+        return
+
+    markup = telebot.types.InlineKeyboardMarkup(row_width=1)
+    btns = []
+    
+    # Take up to 80 spools to avoid telegram limits
+    for s in spools[:80]:
+        rem = round(s.get("remaining_weight", 0))
+        if rem <= 0:
+            continue
+        fil = s.get("filament", {})
+        color_hex = fil.get("color_hex", "")
+        emoji = color_to_emoji(color_hex)
+        brand = fil.get("vendor", {}).get("name", "Unknown")
+        mat = fil.get("material", "Unknown")
+        name = fil.get("name", "")
+        
+        # Max button text length
+        label = f"#{s.get('id')} {emoji} {brand} {mat} {name} ({rem}g)"
+        if len(label) > 60:
+            label = label[:57] + "..."
+            
+        btns.append(telebot.types.InlineKeyboardButton(label, callback_data=f"setslot_{slot}_{s.get('id')}"))
+
+    markup.add(*btns)
+    msg = bot.send_message(call.message.chat.id, t("ask_spool_id", slot=slot), parse_mode="HTML", reply_markup=markup)
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("setslot_"))
+def cb_setslot(call):
+    if not chat_ok(call.message):
+        return
+    parts = call.data.split("_")
+    slot = parts[1]
+    spool_id = int(parts[2])
+    
     mapping = load_mapping()
     mapping[str(int(slot)-1)] = spool_id
     save_mapping(mapping)
-    bot.send_message(message.chat.id, t("spoolman_mapped", sid=spool_id, slot=slot), parse_mode="HTML")
+    
+    try:
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    except:
+        pass
+        
+    bot.send_message(call.message.chat.id, t("spoolman_mapped", sid=spool_id, slot=slot), parse_mode="HTML")
+    bot.answer_callback_query(call.id)
 
 
 @bot.message_handler(commands=["history"])
