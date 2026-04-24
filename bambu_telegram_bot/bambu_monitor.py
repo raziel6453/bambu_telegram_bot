@@ -140,20 +140,20 @@ STRINGS = {
         "print_start":       "🖨️ ההדפסה התחילה!\n📄 קובץ: {filename}\n⚖️ משקל צפוי: {weight}\n⏱️ ETA: {eta} | יסיים ב: {finish}",
         "print_done":        "✅ ההדפסה הסתיימה!\n📄 קובץ: {filename}\n🧵 חוט שהשתמש: {weight}\n⏱️ סה\"כ זמן: {duration}",
         "print_failed":      "❌ ההדפסה נכשלה.\n📄 קובץ: {filename}",
-        "print_paused":      "⏸️ ההדפסה הושהתה.\n📄 קובץ: {filename} | {pct}%",
+        "print_paused":      "⏸️ ההדפסה הושהתה.\n📄 קובץ: {filename} | {pct}% (שכבה {layer}/{total_layers})",
         "print_resumed":     "▶️ ההדפסה חזרה.\n📄 קובץ: {filename}",
-        "progress":          "📊 התקדמות: {pct}%\n⏱️ נותר: {remaining} | יסיים ב: {finish}",
+        "progress":          "📊 התקדמות: {pct}% (שכבה {layer}/{total_layers})\n⏱️ נותר: {remaining} | יסיים ב: {finish}",
         "status_printing":   (
             "🖨️ *מדפיס כעת...*\n"
             "📄 קובץ: `{filename}`\n"
             "⚖️ משקל צפוי: {weight}\n"
             "🧵 נותר בספול: {spool_rem}\n"
-            "📊 התקדמות: {pct}%\n"
+            "📊 התקדמות: {pct}% (שכבה {layer}/{total_layers})\n"
             "⏱️ נותר: {eta}\n"
             "🏁 יסיים ב: {finish}\n"
             "{light}"
         ),
-        "status_paused":     "⏸️ *ההדפסה מושהית*\n📄 קובץ: `{filename}`\n📊 {pct}%\n{light}",
+        "status_paused":     "⏸️ *ההדפסה מושהית*\n📄 קובץ: `{filename}`\n📊 {pct}% (שכבה {layer}/{total_layers})\n{light}",
         "status_idle":       "💤 המדפסת במצב המתנה.\n{light}",
         "ams_title":         "📦 <b>סטטוס AMS:</b>\n",
         "ams_slot_spoolman": "סלוט {slot}: {emoji} {brand} {material} {filname} {color_name} — {grams}g (Spoolman)\n",
@@ -219,20 +219,20 @@ STRINGS = {
         "print_start":       "🖨️ Print started!\n📄 File: {filename}\n⚖️ Est. filament: {weight}\n⏱️ ETA: {eta} | Finishes at: {finish}",
         "print_done":        "✅ Print finished!\n📄 File: {filename}\n🧵 Filament used: {weight}\n⏱️ Total time: {duration}",
         "print_failed":      "❌ Print failed.\n📄 File: {filename}",
-        "print_paused":      "⏸️ Print paused.\n📄 File: {filename} | {pct}%",
+        "print_paused":      "⏸️ Print paused.\n📄 File: {filename} | {pct}% (Layer {layer}/{total_layers})",
         "print_resumed":     "▶️ Print resumed.\n📄 File: {filename}",
-        "progress":          "📊 Progress: {pct}%\n⏱️ Remaining: {remaining} | Finishes at: {finish}",
+        "progress":          "📊 Progress: {pct}% (Layer {layer}/{total_layers})\n⏱️ Remaining: {remaining} | Finishes at: {finish}",
         "status_printing":   (
             "🖨️ *Currently Printing...*\n"
             "📄 File: `{filename}`\n"
             "⚖️ Est. filament: {weight}\n"
             "🧵 Spool remaining: {spool_rem}\n"
-            "📊 Progress: {pct}%\n"
+            "📊 Progress: {pct}% (Layer {layer}/{total_layers})\n"
             "⏱️ Remaining: {eta}\n"
             "🏁 Finishes at: {finish}\n"
             "{light}"
         ),
-        "status_paused":     "⏸️ *Print is paused*\n📄 File: `{filename}`\n📊 {pct}%\n{light}",
+        "status_paused":     "⏸️ *Print is paused*\n📄 File: `{filename}`\n📊 {pct}% (Layer {layer}/{total_layers})\n{light}",
         "status_idle":       "💤 Printer is idle.\n{light}",
         "ams_title":         "📦 <b>AMS Status:</b>\n",
         "ams_slot_spoolman": "Slot {slot}: {emoji} {brand} {material} {filname} {color_name} — {grams}g (Spoolman)\n",
@@ -572,6 +572,8 @@ _state = {
     "start_time":         None,
     "mc_percent":         0,
     "mc_remaining_time":  0,
+    "layer_num":          0,
+    "total_layer_num":    0,
     "last_milestone":     0,
     "print_weight":       0.0,
     "tray_now":           255,
@@ -864,6 +866,8 @@ def on_message(client, userdata, msg):
         gcode_state  = print_data.get("gcode_state",         _state["gcode_state"])
         mc_percent   = print_data.get("mc_percent",          _state["mc_percent"])
         mc_remaining = print_data.get("mc_remaining_time",   _state["mc_remaining_time"])
+        layer_num    = print_data.get("layer_num",           _state.get("layer_num", 0))
+        total_layers = print_data.get("total_layer_num",     _state.get("total_layer_num", 0))
         filename     = print_data.get("subtask_name",        _state["filename"]) or _state["filename"]
 
         # AMS active tray
@@ -907,6 +911,8 @@ def on_message(client, userdata, msg):
             "gcode_state":       gcode_state,
             "mc_percent":        mc_percent,
             "mc_remaining_time": mc_remaining,
+            "layer_num":         layer_num,
+            "total_layer_num":   total_layers,
             "print_weight":      new_weight,
         })
         if filename:
@@ -928,7 +934,7 @@ def on_message(client, userdata, msg):
                 if mc_percent >= milestone > _state["last_milestone"]:
                     _state["last_milestone"] = milestone
                     rem = smart_remaining()
-                    tg_photo(t("progress", pct=milestone,
+                    tg_photo(t("progress", pct=milestone, layer=_state.get("layer_num", 0), total_layers=_state.get("total_layer_num", 0),
                                remaining=fmt_mins(rem), finish=finish_time(rem)))
                     break
 
@@ -942,7 +948,7 @@ def on_message(client, userdata, msg):
             _persist_state()
 
         elif gcode_state == "PAUSE" and was_printing and prev_state == "RUNNING":
-            tg_send(t("print_paused", filename=filename or "–", pct=mc_percent))
+            tg_send(t("print_paused", filename=filename or "–", pct=mc_percent, layer=_state.get("layer_num", 0), total_layers=_state.get("total_layer_num", 0)))
 
         elif gcode_state == "RUNNING" and prev_state == "PAUSE":
             tg_send(t("print_resumed", filename=filename or "–"))
@@ -1032,10 +1038,10 @@ def cmd_status(message):
                 rem_mins = smart_remaining()
 
                 if gcode == "PAUSE":
-                    res = t("status_paused", filename=fn, pct=pct, light=light_str)
+                    res = t("status_paused", filename=fn, pct=pct, layer=_state.get("layer_num", 0), total_layers=_state.get("total_layer_num", 0), light=light_str)
                 else:
                     res = t("status_printing",
-                            filename=fn, pct=pct,
+                            filename=fn, pct=pct, layer=_state.get("layer_num", 0), total_layers=_state.get("total_layer_num", 0),
                             weight=weight_str, spool_rem=spool_rem,
                             eta=fmt_mins(rem_mins), finish=finish_time(rem_mins),
                             light=light_str)
