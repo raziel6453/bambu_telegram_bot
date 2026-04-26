@@ -65,7 +65,7 @@ A Telegram bot that monitors your **Bambu Lab 3D printer** (A1 / P1 / X1 series)
 ### 📊 Status
 | Command | Description |
 |---------|-------------|
-| `/status` | Live printer status + Spoolman remaining weight + camera snapshot |
+| `/status` | Live printer status + active slot + Spoolman remaining weight + camera snapshot |
 | `/ams` | AMS slot details (type, colour, remaining %) |
 | `/history` | Last 10 completed prints (date, file, duration, grams) |
 
@@ -85,7 +85,7 @@ A Telegram bot that monitors your **Bambu Lab 3D printer** (A1 / P1 / X1 series)
 | Command | Description |
 |---------|-------------|
 | `/spools` | List all spools in your Spoolman inventory |
-| `/map <slot> <spool_id>` | Map an AMS slot (1–4) to an existing Spoolman spool |
+| `/map [slot] [spool_id]` | Interactive mode: Run without arguments to pick slot and spool via buttons, or provide arguments for quick mapping |
 | `/set <slot> <brand> <material>` | Create a new spool in Spoolman and map the slot automatically |
 
 ### 🔦 Tools
@@ -105,7 +105,8 @@ If you run [Spoolman](https://github.com/Donkie/Spoolman) for filament tracking:
 2. Map AMS slots to spools:
 
 ```
-/map 1 42    # Links AMS slot 1 → spool ID 42
+/map              # Interactive mode: select slot and spool via chat buttons
+/map 1 42         # Quick mode: Links AMS slot 1 → spool ID 42
 /set 2 Bambu PLA  # Creates a NEW spool and links slot 2
 ```
 

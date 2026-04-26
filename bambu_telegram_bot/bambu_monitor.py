@@ -147,6 +147,7 @@ STRINGS = {
             "🖨️ *מדפיס כעת...*\n"
             "📄 קובץ: `{filename}`\n"
             "⚖️ משקל צפוי: {weight}\n"
+            "📦 סלוט פעיל: {slot_info}\n"
             "🧵 נותר בספול: {spool_rem}\n"
             "📊 התקדמות: {pct}% (שכבה {layer}/{total_layers})\n"
             "⏱️ נותר: {eta}\n"
@@ -155,12 +156,14 @@ STRINGS = {
         ),
         "status_paused":     "⏸️ *ההדפסה מושהית*\n📄 קובץ: `{filename}`\n📊 {pct}% (שכבה {layer}/{total_layers})\n{light}",
         "status_idle":       "💤 המדפסת במצב המתנה.\n{light}",
+        "external_spool":    "סליל חיצוני",
         "ams_title":         "📦 <b>סטטוס AMS:</b>\n",
         "ams_slot_spoolman": "סלוט {slot}: {emoji} {brand} {material} {filname} {color_name} — {grams}g (Spoolman)\n",
         "ams_slot_native":   "סלוט {slot}: {emoji} {ftype} ({brand}) {color_name} — {grams}g\n",
         "ams_slot_empty":    "סלוט {slot}: ❌ ריק\n",
         "ams_no_data":       "❌ אין נתוני AMS עדיין.\nשלח /debug לבדוק חיבור MQTT.",
         "ask_spool_id":      "👇 בחר ספול מ-Spoolman כדי לשייך לסלוט {slot}:",
+        "ask_slot_to_map":   "👇 באיזה סלוט תרצה לשייך ספול?",
         "invalid_number":    "❌ שגיאה: נא להקליד מספר חוקי.",
         "spools_title":      "📦 *מלאי Spoolman:*\n",
         "spools_item":       "#{id} | {emoji} {brand} {material} | {grams}g\n",
@@ -226,6 +229,7 @@ STRINGS = {
             "🖨️ *Currently Printing...*\n"
             "📄 File: `{filename}`\n"
             "⚖️ Est. filament: {weight}\n"
+            "📦 Active Slot: {slot_info}\n"
             "🧵 Spool remaining: {spool_rem}\n"
             "📊 Progress: {pct}% (Layer {layer}/{total_layers})\n"
             "⏱️ Remaining: {eta}\n"
@@ -234,12 +238,14 @@ STRINGS = {
         ),
         "status_paused":     "⏸️ *Print is paused*\n📄 File: `{filename}`\n📊 {pct}% (Layer {layer}/{total_layers})\n{light}",
         "status_idle":       "💤 Printer is idle.\n{light}",
+        "external_spool":    "External Spool",
         "ams_title":         "📦 <b>AMS Status:</b>\n",
         "ams_slot_spoolman": "Slot {slot}: {emoji} {brand} {material} {filname} {color_name} — {grams}g (Spoolman)\n",
         "ams_slot_native":   "Slot {slot}: {emoji} {ftype} ({brand}) {color_name} — {grams}g\n",
         "ams_slot_empty":    "Slot {slot}: ❌ Empty\n",
         "ams_no_data":       "❌ No AMS data yet.\nSend /debug to check MQTT connection.",
         "ask_spool_id":      "👇 Choose a Spoolman spool to map to Slot {slot}:",
+        "ask_slot_to_map":   "👇 Which slot do you want to map?",
         "invalid_number":    "❌ Error: Please type a valid number.",
         "spools_title":      "📦 *Spoolman Inventory:*\n",
         "spools_item":       "#{id} | {emoji} {brand} {material} | {grams}g remaining\n",
@@ -1037,12 +1043,14 @@ def cmd_status(message):
 
                 rem_mins = smart_remaining()
 
+                slot_info = t("external_spool") if tray == 255 else str(tray + 1)
+
                 if gcode == "PAUSE":
                     res = t("status_paused", filename=fn, pct=pct, layer=_state.get("layer_num", 0), total_layers=_state.get("total_layer_num", 0), light=light_str)
                 else:
                     res = t("status_printing",
                             filename=fn, pct=pct, layer=_state.get("layer_num", 0), total_layers=_state.get("total_layer_num", 0),
-                            weight=weight_str, spool_rem=spool_rem,
+                            weight=weight_str, spool_rem=spool_rem, slot_info=slot_info,
                             eta=fmt_mins(rem_mins), finish=finish_time(rem_mins),
                             light=light_str)
             else:
@@ -1328,13 +1336,26 @@ def cmd_spools(message):
 
 @bot.message_handler(commands=["map"])
 def cmd_map(message):
-    """/map <slot 1-4> <spoolman_id>"""
+    """/map [slot 1-4] [spoolman_id]"""
     if not chat_ok(message):
         return
     if not SPOOLMAN_URL:
         bot.reply_to(message, t("spoolman_no_url"))
         return
     parts = message.text.strip().split()
+    
+    # Interactive mode
+    if len(parts) == 1:
+        markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            telebot.types.InlineKeyboardButton("Slot 1", callback_data="map_1"),
+            telebot.types.InlineKeyboardButton("Slot 2", callback_data="map_2"),
+            telebot.types.InlineKeyboardButton("Slot 3", callback_data="map_3"),
+            telebot.types.InlineKeyboardButton("Slot 4", callback_data="map_4"),
+        )
+        bot.reply_to(message, t("ask_slot_to_map"), reply_markup=markup)
+        return
+
     if len(parts) < 3:
         bot.reply_to(message, t("spoolman_usage"))
         return
