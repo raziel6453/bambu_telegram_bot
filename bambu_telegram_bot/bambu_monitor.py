@@ -857,6 +857,8 @@ def _on_print_finish(filename, weight):
     tg_photo(t("print_done", filename=filename or "–", weight=w_str, duration=dur))
 
     _spool_deduct(weight, tray)
+    _state["print_weight"] = 0  # Reset for next print
+    
     _add_history({
         "date":     datetime.now(JERUSALEM).strftime("%Y-%m-%d %H:%M"),
         "filename": filename or "Unknown",
@@ -968,8 +970,9 @@ def on_message(client, userdata, msg):
             "mc_remaining_time": mc_remaining,
             "layer_num":         layer_num,
             "total_layer_num":   total_layers,
-            "print_weight":      new_weight,
         })
+        if new_weight > 0:
+            _state["print_weight"] = new_weight
         if filename:
             _state["filename"] = filename
 
