@@ -790,6 +790,19 @@ def _on_print_start(mc_percent, mc_remaining, filename, weight):
         _state["start_time"] = datetime.now()
 
     _capture_spool_start(_state.get("tray_now", 255))
+    
+    if weight <= 0:
+        if HA_AVAILABLE:
+            we = _ha_weight_entity()
+            if we:
+                val = _ha_sensor(we)
+                if val:
+                    try:
+                        weight = float(str(val).replace("g", "").strip())
+                    except Exception:
+                        pass
+    if weight <= 0 and _state.get("print_weight", 0) > 0:
+        weight = _state["print_weight"]
 
     rem   = smart_remaining()
     w_str = f"{weight:.1f}g" if weight > 0 else "–"
