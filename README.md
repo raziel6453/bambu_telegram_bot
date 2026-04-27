@@ -87,6 +87,7 @@ A Telegram bot that monitors your **Bambu Lab 3D printer** (A1 / P1 / X1 series)
 | `/spools` | List all spools in your Spoolman inventory |
 | `/map [slot] [spool_id]` | Interactive mode: Run without arguments to pick slot and spool via buttons, or provide arguments for quick mapping |
 | `/set <slot> <brand> <material>` | Create a new spool in Spoolman and map the slot automatically |
+| `/update` | Interactive mode: Select a spool and manually update its remaining weight via chat |
 
 ### 🔦 Tools
 | Command | Description |
@@ -108,6 +109,7 @@ If you run [Spoolman](https://github.com/Donkie/Spoolman) for filament tracking:
 /map              # Interactive mode: select slot and spool via chat buttons
 /map 1 42         # Quick mode: Links AMS slot 1 → spool ID 42
 /set 2 Bambu PLA  # Creates a NEW spool and links slot 2
+/update           # Interactive mode: manually update a spool's remaining weight
 ```
 
 3. On print completion, the bot automatically deducts usage from the mapped spool.

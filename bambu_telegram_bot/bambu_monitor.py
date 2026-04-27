@@ -174,8 +174,12 @@ STRINGS = {
         "set_ok":            "✅ ספול חדש נוצר ב-Spoolman ושויך לסלוט {slot}.",
         "set_fail":          "❌ שגיאה ביצירת ספול.",
         "set_usage":         "❌ שימוש: /set [סלוט] [מותג] [חומר]\nלדוגמא: /set 1 Bambu PLA",
+        "set_usage":         "❌ שימוש: /set [סלוט] [מותג] [חומר]\nלדוגמא: /set 1 Bambu PLA",
+        "ask_update_spool":  "👇 בחר איזה ספול תרצה לעדכן:",
+        "ask_new_weight":    "⚖️ מהו המשקל הנותר העדכני (בגרמים) עבור ספול #{sid}?\n\n(שלח מספר, או /cancel לביטול)",
+        "update_success":    "✅ ספול #{sid} עודכן בהצלחה! משקל נותר: {weight}g.",
+        "update_cancel":     "❌ העדכון בוטל.",
         "low_stock":         "⚠️ ספול #{sid} ({label}) על סיום — נותר {grams}g בלבד!",
-        "low_filament":      "⚠️ מעט חוט בסלוט {slot}! נותר ~{grams}g",
         "history_title":     "🗒️ *היסטוריית הדפסות:*\n",
         "history_item":      "📅 {date} | {filename} | {duration} | {grams}\n",
         "history_empty":     "אין הדפסות שמורות.",
@@ -208,7 +212,8 @@ STRINGS = {
             "📦 <b>Spoolman</b>\n"
             "/spools — רשימת ספולים\n"
             "/map [סלוט] [id] — שיוך סלוט לספול\n"
-            "/set [סלוט] [מותג] [חומר] — ספול חדש + שיוך\n\n"
+            "/set [סלוט] [מותג] [חומר] — ספול חדש + שיוך\n"
+            "/update — עדכון ידני של משקל ספול\n\n"
             "🔦 <b>כלים</b>\n"
             "/light — הדלקה/כיבוי נורה\n"
             "/debug — נתוני MQTT גולמיים\n"
@@ -256,8 +261,12 @@ STRINGS = {
         "set_ok":            "✅ New spool created in Spoolman and mapped to Slot {slot}.",
         "set_fail":          "❌ Failed to create spool.",
         "set_usage":         "❌ Usage: /set [slot] [brand] [material]\nExample: /set 1 Bambu PLA",
+        "set_usage":         "❌ Usage: /set [slot] [brand] [material]\nExample: /set 1 Bambu PLA",
+        "ask_update_spool":  "👇 Choose which spool you want to update:",
+        "ask_new_weight":    "⚖️ What is the actual remaining weight (in grams) for Spool #{sid}?\n\n(Send a number, or /cancel to abort)",
+        "update_success":    "✅ Spool #{sid} successfully updated! Remaining weight: {weight}g.",
+        "update_cancel":     "❌ Update cancelled.",
         "low_stock":         "⚠️ Spool #{sid} ({label}) is running low — only {grams}g left!",
-        "low_filament":      "⚠️ Low filament in Slot {slot}! ~{grams}g remaining",
         "history_title":     "🗒️ *Print History:*\n",
         "history_item":      "📅 {date} | {filename} | {duration} | {grams}\n",
         "history_empty":     "No prints saved yet.",
@@ -290,7 +299,8 @@ STRINGS = {
             "📦 <b>Spoolman</b>\n"
             "/spools — List inventory\n"
             "/map [slot] [id] — Map slot to existing spool\n"
-            "/set [slot] [brand] [material] — Create new spool and map slot\n\n"
+            "/set [slot] [brand] [material] — Create new spool and map slot\n"
+            "/update — Manually update a spool's remaining weight\n\n"
             "🔦 <b>Tools</b>\n"
             "/light — Toggle printer lamp\n"
             "/debug — Raw MQTT data for troubleshooting\n"
@@ -686,6 +696,17 @@ def _spoolman_post(path: str, data: dict, timeout=10):
     return None
 
 
+def _spoolman_patch(path: str, data: dict, timeout=10):
+    if not SPOOLMAN_URL:
+        return False
+    try:
+        r = requests.patch(f"{SPOOLMAN_URL}{path}", json=data, timeout=timeout)
+        return r.status_code in (200, 204)
+    except Exception as e:
+        log.error(f"Spoolman PATCH {path}: {e}")
+    return False
+
+
 def _check_low_stock(spool_id):
     data = _spoolman_get(f"/api/v1/spool/{spool_id}")
     if not data:
@@ -799,6 +820,20 @@ def _on_reconnect_recovery(mc_percent, mc_remaining):
 
 def _on_print_finish(filename, weight):
     _state["printing"] = False
+    
+    if weight <= 0:
+        if HA_AVAILABLE:
+            we = _ha_weight_entity()
+            if we:
+                val = _ha_sensor(we)
+                if val:
+                    try:
+                        weight = float(str(val).replace("g", "").strip())
+                    except Exception:
+                        pass
+    if weight <= 0 and _state["print_weight"] > 0:
+        weight = _state["print_weight"]
+        
     dur  = ""
     if _state["start_time"]:
         dur = fmt_duration((datetime.now() - _state["start_time"]).total_seconds())
@@ -1419,6 +1454,78 @@ def cmd_set(message):
     except Exception as e:
         log.error(f"/set error: {e}")
         bot.reply_to(message, t("set_fail"))
+
+
+@bot.message_handler(commands=["update"])
+def cmd_update(message):
+    if not chat_ok(message):
+        return
+    if not SPOOLMAN_URL:
+        bot.reply_to(message, t("spoolman_no_url"))
+        return
+        
+    spools = _spoolman_get("/api/v1/spool")
+    if not spools:
+        bot.reply_to(message, "❌ Cannot reach Spoolman or no spools found.")
+        return
+
+    markup = telebot.types.InlineKeyboardMarkup(row_width=1)
+    btns = []
+    
+    # Take up to 80 spools to avoid telegram limits
+    for s in spools[:80]:
+        rem = round(s.get("remaining_weight", 0))
+        fil = s.get("filament", {})
+        color_hex = fil.get("color_hex", "")
+        emoji = color_to_emoji(color_hex)
+        brand = fil.get("vendor", {}).get("name", "Unknown")
+        mat = fil.get("material", "Unknown")
+        name = fil.get("name", "")
+        
+        label = f"#{s.get('id')} {emoji} {brand} {mat} {name} ({rem}g)"
+        if len(label) > 60:
+            label = label[:57] + "..."
+            
+        btns.append(telebot.types.InlineKeyboardButton(label, callback_data=f"update_{s.get('id')}"))
+
+    markup.add(*btns)
+    bot.send_message(message.chat.id, t("ask_update_spool"), parse_mode="HTML", reply_markup=markup)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("update_"))
+def cb_update(call):
+    if not chat_ok(call.message):
+        return
+    spool_id = int(call.data.split("_")[1])
+    
+    try:
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    except:
+        pass
+        
+    msg = bot.send_message(call.message.chat.id, t("ask_new_weight", sid=spool_id))
+    bot.register_next_step_handler(msg, process_spool_update_weight, spool_id)
+    bot.answer_callback_query(call.id)
+
+
+def process_spool_update_weight(message, spool_id):
+    if message.text and message.text.strip().lower() == "/cancel":
+        bot.reply_to(message, t("update_cancel"))
+        return
+        
+    try:
+        new_weight = float(message.text.strip())
+        if new_weight < 0:
+            raise ValueError()
+            
+        payload = {"remaining_weight": new_weight}
+        if _spoolman_patch(f"/api/v1/spool/{spool_id}", payload):
+            bot.reply_to(message, t("update_success", sid=spool_id, weight=new_weight))
+        else:
+            bot.reply_to(message, t("set_fail"))
+    except ValueError:
+        msg = bot.reply_to(message, t("invalid_number"))
+        bot.register_next_step_handler(msg, process_spool_update_weight, spool_id)
 
 
 @bot.message_handler(commands=["debug"])
