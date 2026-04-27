@@ -118,6 +118,7 @@ def setup_bot_commands():
         telebot.types.BotCommand("spools", "List Spoolman inventory"),
         telebot.types.BotCommand("map", "Map slot to existing spool"),
         telebot.types.BotCommand("set", "Create new spool and map slot"),
+        telebot.types.BotCommand("update", "Update spool remaining weight"),
         telebot.types.BotCommand("light", "Toggle printer lamp"),
         telebot.types.BotCommand("debug", "Raw MQTT data"),
         telebot.types.BotCommand("help", "Show this menu"),
