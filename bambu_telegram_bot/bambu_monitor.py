@@ -573,16 +573,8 @@ def smart_remaining() -> int:
             if raw and str(raw).isdigit():
                 return int(raw)
 
-    # Priority 2: Mathematical extrapolation
-    pct   = _state["mc_percent"]
-    start = _state["start_time"]
-    if start and pct and pct > 5:
-        elapsed   = (datetime.now() - start).total_seconds() / 60.0
-        remaining = elapsed * (100 - pct) / pct
-        return max(0, int(remaining))
-
-    # Priority 3: MQTT reported value
-    return max(0, _state["mc_remaining_time"])
+    # Priority 2: MQTT reported value
+    return max(0, _state.get("mc_remaining_time", 0))
 
 
 # ── State ─────────────────────────────────────────────────────────────────────
@@ -949,9 +941,9 @@ def on_message(client, userdata, msg):
             except Exception:
                 pass
 
-        # Filament weight — try grams fields first
+        # Filament weight — try all known grams fields
         new_weight = _state["print_weight"]
-        for field in ("subtask_weight", "print_weight"):
+        for field in ("subtask_weight", "print_weight", "total_weight", "weight"):
             val = print_data.get(field)
             if val is not None:
                 try:
@@ -961,19 +953,6 @@ def on_message(client, userdata, msg):
                         break
                 except Exception:
                     pass
-
-        # Milligrams fallback
-        if new_weight <= 0:
-            for field in ("total_weight", "weight"):
-                val = print_data.get(field)
-                if val is not None:
-                    try:
-                        w = float(str(val).lower().replace("g", "").strip())
-                        if w > 0:
-                            new_weight = round(w / 1000.0, 1)
-                            break
-                    except Exception:
-                        pass
 
         prev_state   = _state["gcode_state"]
         was_printing = _state["printing"]
