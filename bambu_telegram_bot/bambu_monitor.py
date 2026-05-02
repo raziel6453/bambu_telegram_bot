@@ -708,7 +708,9 @@ def _check_low_stock(spool_id):
     data = _spoolman_get(f"/api/v1/spool/{spool_id}")
     if not data:
         return
-    rem = data.get("remaining_weight", 9999)
+    rem = data.get("remaining_weight")
+    if rem is None:
+        rem = 9999
     if rem < LOW_STOCK_THRESH:
         fil   = data.get("filament", {})
         label = f"{fil.get('vendor', {}).get('name', '')} {fil.get('material', '')}".strip()
@@ -1149,7 +1151,8 @@ def cmd_ams(message):
                     brand = fil.get("vendor", {}).get("name", "Unknown")
                     mat   = fil.get("material", "")
                     filname = fil.get("name", "")
-                    grams = round(data.get("remaining_weight", 0))
+                    rem_w = data.get("remaining_weight")
+                    grams = round(rem_w) if rem_w is not None else 0
                     res  += t("ams_slot_spoolman", slot=slot_num, emoji=emoji,
                               brand=brand, material=mat, filname=filname, color_name=color_str, grams=grams)
                 else:
@@ -1199,7 +1202,8 @@ def cb_map(call):
     
     # Take up to 80 spools to avoid telegram limits
     for s in spools[:80]:
-        rem = round(s.get("remaining_weight", 0))
+        rem_w = s.get("remaining_weight")
+        rem = round(rem_w) if rem_w is not None else 0
         if rem <= 0:
             continue
         fil = s.get("filament", {})
@@ -1366,7 +1370,8 @@ def cmd_spools(message):
         return
     res = t("spools_title")
     for s in spools:
-        rem = round(s.get("remaining_weight", 0))
+        rem_w = s.get("remaining_weight")
+        rem = round(rem_w) if rem_w is not None else 0
         if rem <= 0:
             continue
         fil   = s.get("filament", {})
@@ -1439,13 +1444,19 @@ def cmd_set(message):
         ams_info = _ams_state.get(str(slot - 1), {})
         color    = ams_info.get("color", "FFFFFF")[:6]  # strip alpha if 8-char
 
+        fil_payload = {
+            "name":      f"{brand} {material}",
+            "material":  material,
+            "color_hex": color,
+        }
+        fil_res = _spoolman_post("/api/v1/filament", fil_payload)
+        if not fil_res or not fil_res.get("id"):
+            bot.reply_to(message, t("set_fail"))
+            return
+
         payload = {
-            "filament": {
-                "name":      f"{brand} {material}",
-                "material":  material,
-                "color_hex": color,
-            },
-            "remaining_weight": 1000,
+            "filament_id": fil_res["id"],
+            "initial_weight": 1000,
         }
         result = _spoolman_post("/api/v1/spool", payload)
         if not result or not result.get("id"):
@@ -1484,7 +1495,8 @@ def cmd_update(message):
     
     # Take up to 80 spools to avoid telegram limits
     for s in spools[:80]:
-        rem = round(s.get("remaining_weight", 0))
+        rem_w = s.get("remaining_weight")
+        rem = round(rem_w) if rem_w is not None else 0
         fil = s.get("filament", {})
         color_hex = fil.get("color_hex", "")
         emoji = color_to_emoji(color_hex)
