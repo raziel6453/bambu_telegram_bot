@@ -4,7 +4,7 @@ Bambu Lab Telegram Monitor — Home Assistant Add-on
 Clean rewrite. Supports A1/P1/X1 via local or cloud MQTT.
 """
 
-import os, sys, json, html, ssl, socket, threading, logging, requests, yaml
+import os, sys, json, html, ssl, socket, threading, logging, requests, yaml, time
 from datetime import datetime, timedelta, timezone
 
 VERSION = "2026-04-16.v3"
@@ -180,6 +180,8 @@ STRINGS = {
         "ask_new_weight":    "⚖️ מהו המשקל הנותר העדכני (בגרמים) עבור ספול #{sid}?\n\n(שלח מספר, או /cancel לביטול)",
         "update_success":    "✅ ספול #{sid} עודכן בהצלחה! משקל נותר: {weight}g.",
         "update_cancel":     "❌ העדכון בוטל.",
+        "spoolman_deduct_ok": "\n\n✅ <b>Spoolman:</b> קוזז {weight}g מספול #{sid}",
+        "spoolman_deduct_fail": "\n\n❌ <b>Spoolman:</b> שגיאה בקיזוז משקל מספול #{sid}",
         "low_stock":         "⚠️ ספול #{sid} ({label}) על סיום — נותר {grams}g בלבד!",
         "history_title":     "🗒️ *היסטוריית הדפסות:*\n",
         "history_item":      "📅 {date} | {filename} | {duration} | {grams}\n",
@@ -267,6 +269,8 @@ STRINGS = {
         "ask_new_weight":    "⚖️ What is the actual remaining weight (in grams) for Spool #{sid}?\n\n(Send a number, or /cancel to abort)",
         "update_success":    "✅ Spool #{sid} successfully updated! Remaining weight: {weight}g.",
         "update_cancel":     "❌ Update cancelled.",
+        "spoolman_deduct_ok": "\n\n✅ <b>Spoolman:</b> Deducted {weight}g from Spool #{sid}",
+        "spoolman_deduct_fail": "\n\n❌ <b>Spoolman:</b> Failed to deduct weight from Spool #{sid}",
         "low_stock":         "⚠️ Spool #{sid} ({label}) is running low — only {grams}g left!",
         "history_title":     "🗒️ *Print History:*\n",
         "history_item":      "📅 {date} | {filename} | {duration} | {grams}\n",
@@ -728,18 +732,20 @@ def _capture_spool_start(tray: int):
             _state["spool_start_weight"] = data.get("remaining_weight")
 
 
-def _spool_deduct(weight_g: float, tray: int):
+def _spool_deduct(weight_g: float, tray: int) -> str:
     if weight_g <= 0 or tray == 255 or not SPOOLMAN_URL:
-        return
+        return ""
     mapping  = load_mapping()
     spool_id = mapping.get(str(tray))
     if not spool_id:
-        return
+        return ""
     ok = _spoolman_put(f"/api/v1/spool/{spool_id}/use", {"use_weight": weight_g})
     if ok:
         log.info(f"Deducted {weight_g}g from Spoolman spool {spool_id}")
+        return t("spoolman_deduct_ok", weight=weight_g, sid=spool_id)
     else:
         log.error(f"Failed to deduct from Spoolman spool {spool_id}")
+        return t("spoolman_deduct_fail", sid=spool_id)
 
 
 # ── Print History ─────────────────────────────────────────────────────────────
@@ -793,14 +799,17 @@ def _on_print_start(mc_percent, mc_remaining, filename, weight):
     
     if weight <= 0:
         if HA_AVAILABLE:
-            we = _ha_weight_entity()
-            if we:
-                val = _ha_sensor(we)
-                if val:
-                    try:
-                        weight = float(str(val).replace("g", "").strip())
-                    except Exception:
-                        pass
+            for _ in range(5):
+                we = _ha_weight_entity()
+                if we:
+                    val = _ha_sensor(we)
+                    if val and str(val).lower() not in ("0.0g", "0g", "unknown", "unavailable", "0.0", "0", "none"):
+                        try:
+                            weight = float(str(val).replace("g", "").strip())
+                            break
+                        except Exception:
+                            pass
+                time.sleep(1)
     if weight <= 0 and _state.get("print_weight", 0) > 0:
         weight = _state["print_weight"]
 
@@ -854,9 +863,14 @@ def _on_print_finish(filename, weight):
     tray  = _state.get("tray_now", 255)
     w_str = f"{weight:.1f}g" if weight > 0 else "–"
     log.info(f"Print finished: {filename} in {dur}, {weight}g used")
-    tg_photo(t("print_done", filename=filename or "–", weight=w_str, duration=dur))
+    
+    spool_status = _spool_deduct(weight, tray)
+    msg = t("print_done", filename=filename or "–", weight=w_str, duration=dur)
+    if spool_status:
+        msg += spool_status
+        
+    tg_photo(msg)
 
-    _spool_deduct(weight, tray)
     _state["print_weight"] = 0  # Reset for next print
     
     _add_history({
