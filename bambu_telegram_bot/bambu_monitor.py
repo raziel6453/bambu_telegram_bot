@@ -7,7 +7,7 @@ Clean rewrite. Supports A1/P1/X1 via local or cloud MQTT.
 import os, sys, json, html, ssl, socket, threading, logging, requests, yaml, time
 from datetime import datetime, timedelta, timezone
 
-VERSION = "2026-05-03.v2"
+VERSION = "2026-05-03.v3"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:
@@ -945,9 +945,13 @@ def _on_print_finish(filename, weight):
         "spools_used": spools_used,
     })
 
-    if tray != 255:
+    if spools_used:
+        for su in spools_used:
+            if su.get("spool_id"):
+                threading.Thread(target=_check_low_stock, args=(su["spool_id"],), daemon=True).start()
+    elif active_tray != 255:
         mapping  = load_mapping()
-        spool_id = mapping.get(str(tray))
+        spool_id = mapping.get(str(active_tray))
         if spool_id:
             threading.Thread(target=_check_low_stock, args=(spool_id,), daemon=True).start()
 
