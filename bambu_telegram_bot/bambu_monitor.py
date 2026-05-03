@@ -7,7 +7,7 @@ Clean rewrite. Supports A1/P1/X1 via local or cloud MQTT.
 import os, sys, json, html, ssl, socket, threading, logging, requests, yaml, time
 from datetime import datetime, timedelta, timezone
 
-VERSION = "2026-05-03.v1"
+VERSION = "2026-05-03.v2"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:
@@ -1088,14 +1088,13 @@ def on_message(client, userdata, msg):
                     sid = tray_info.get("id")
                     if sid is None:
                         continue
-                    
-                    remain_pct = tray_info.get("remain", -1)
-                    tray_type = tray_info.get("tray_type", "Unknown")
-                    tray_color = tray_info.get("tray_color", "FFFFFF")
-                    tray_brand = tray_info.get("tray_sub_brands", "")
-                    
                     old_state = _ams_state.get(str(sid), {})
                     old_remain = old_state.get("remain", -1)
+
+                    remain_pct = tray_info.get("remain", old_remain)
+                    tray_type = tray_info.get("tray_type", old_state.get("type", "Unknown"))
+                    tray_color = tray_info.get("tray_color", old_state.get("color", "FFFFFF"))
+                    tray_brand = tray_info.get("tray_sub_brands", old_state.get("brand", ""))
 
                     _ams_state[str(sid)] = {
                         "type":   tray_type,
