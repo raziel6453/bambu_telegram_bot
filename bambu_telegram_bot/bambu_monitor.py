@@ -180,7 +180,7 @@ STRINGS = {
         "ask_new_weight":    "⚖️ מהו המשקל הנותר העדכני (בגרמים) עבור ספול #{sid}?\n\n(שלח מספר, או /cancel לביטול)",
         "update_success":    "✅ ספול #{sid} עודכן בהצלחה! משקל נותר: {weight}g.",
         "update_cancel":     "❌ העדכון בוטל.",
-        "spoolman_deduct_ok": "\n\n✅ <b>Spoolman:</b> קוזז {weight}g מספול #{sid}",
+        "spoolman_deduct_ok": "\n\n✅ <b>Spoolman:</b> קוזז {amount} מספול #{sid}",
         "spoolman_deduct_fail": "\n\n❌ <b>Spoolman:</b> שגיאה בקיזוז משקל מספול #{sid}",
         "low_stock":         "⚠️ ספול #{sid} ({label}) על סיום — נותר {grams}g בלבד!",
         "history_title":     "🗒️ *היסטוריית הדפסות:*\n",
@@ -269,7 +269,7 @@ STRINGS = {
         "ask_new_weight":    "⚖️ What is the actual remaining weight (in grams) for Spool #{sid}?\n\n(Send a number, or /cancel to abort)",
         "update_success":    "✅ Spool #{sid} successfully updated! Remaining weight: {weight}g.",
         "update_cancel":     "❌ Update cancelled.",
-        "spoolman_deduct_ok": "\n\n✅ <b>Spoolman:</b> Deducted {weight}g from Spool #{sid}",
+        "spoolman_deduct_ok": "\n\n✅ <b>Spoolman:</b> Deducted {amount} from Spool #{sid}",
         "spoolman_deduct_fail": "\n\n❌ <b>Spoolman:</b> Failed to deduct weight from Spool #{sid}",
         "low_stock":         "⚠️ Spool #{sid} ({label}) is running low — only {grams}g left!",
         "history_title":     "🗒️ *Print History:*\n",
@@ -591,6 +591,7 @@ _state = {
     "print_weight":       0.0,
     "tray_now":           255,
     "spool_start_weight": None,
+    "filament_used":      None,
     "_raw_print":         {},
 }
 _ams_state     = {}       # slot_id (str "0"–"3") -> {type, color, brand, remain}
@@ -606,7 +607,7 @@ def _restore_state():
         return
     for key in ("printing", "gcode_state", "filename", "mc_percent",
                 "mc_remaining_time", "last_milestone", "print_weight",
-                "tray_now", "spool_start_weight"):
+                "tray_now", "spool_start_weight", "filament_used"):
         if key in saved:
             _state[key] = saved[key]
     if saved.get("start_time"):
@@ -628,6 +629,7 @@ def _persist_state():
         "print_weight":       _state["print_weight"],
         "tray_now":           _state["tray_now"],
         "spool_start_weight": _state["spool_start_weight"],
+        "filament_used":      _state["filament_used"],
         "start_time":         _state["start_time"].isoformat() if _state["start_time"] else None,
     })
 
@@ -726,17 +728,29 @@ def _capture_spool_start(tray: int):
             _state["spool_start_weight"] = data.get("remaining_weight")
 
 
-def _spool_deduct(weight_g: float, tray: int) -> str:
-    if weight_g <= 0 or tray == 255 or not SPOOLMAN_URL:
+def _spool_deduct(tray: int, weight_g: float = None, length_mm: float = None) -> str:
+    if tray == 255 or not SPOOLMAN_URL:
         return ""
     mapping  = load_mapping()
     spool_id = mapping.get(str(tray))
     if not spool_id:
         return ""
-    ok = _spoolman_put(f"/api/v1/spool/{spool_id}/use", {"use_weight": weight_g})
+        
+    payload = {}
+    val_str = ""
+    if length_mm is not None and length_mm > 0:
+        payload = {"use_length": length_mm}
+        val_str = f"{length_mm:.1f}mm"
+    elif weight_g is not None and weight_g > 0:
+        payload = {"use_weight": weight_g}
+        val_str = f"{weight_g:.1f}g"
+    else:
+        return ""
+
+    ok = _spoolman_put(f"/api/v1/spool/{spool_id}/use", payload)
     if ok:
-        log.info(f"Deducted {weight_g}g from Spoolman spool {spool_id}")
-        return t("spoolman_deduct_ok", weight=weight_g, sid=spool_id)
+        log.info(f"Deducted {val_str} from Spoolman spool {spool_id}")
+        return t("spoolman_deduct_ok", amount=val_str, sid=spool_id)
     else:
         log.error(f"Failed to deduct from Spoolman spool {spool_id}")
         return t("spoolman_deduct_fail", sid=spool_id)
@@ -848,17 +862,56 @@ def _on_print_finish(filename, weight):
                         weight = float(str(val).replace("g", "").strip())
                     except Exception:
                         pass
-    if weight <= 0 and _state["print_weight"] > 0:
-        weight = _state["print_weight"]
-        
     dur  = ""
     if _state["start_time"]:
         dur = fmt_duration((datetime.now() - _state["start_time"]).total_seconds())
-    tray  = _state.get("tray_now", 255)
-    w_str = f"{weight:.1f}g" if weight > 0 else "–"
-    log.info(f"Print finished: {filename} in {dur}, {weight}g used")
+    active_tray  = _state.get("tray_now", 255)
     
-    spool_status = _spool_deduct(weight, tray)
+    # ── Deduct from Spoolman ─────────────────────────────────────────────────
+    filament_used = _state.get("filament_used")
+    weight = _state.get("print_weight", 0.0)
+    spool_status = ""
+
+    if filament_used:
+        if isinstance(filament_used, list):
+            for i, length_m in enumerate(filament_used):
+                try:
+                    lm = float(length_m)
+                    if lm > 0:
+                        msg = _spool_deduct(tray=i, length_mm=lm * 1000)
+                        if msg:
+                            spool_status += f"\n\n{msg}"
+                except (ValueError, TypeError):
+                    pass
+        else:
+            try:
+                lm = float(filament_used)
+                if lm > 0:
+                    msg = _spool_deduct(tray=active_tray, length_mm=lm * 1000)
+                    if msg:
+                        spool_status += f"\n\n{msg}"
+            except (ValueError, TypeError):
+                pass
+
+    if not spool_status:
+        # Fallback to weight deduction if filament_used was not present or failed
+        if weight <= 0.0 and HA_WEIGHT_ENTITY and "homeassistant" in sys.modules:
+            try:
+                weight = float(sys.modules["homeassistant"].get_state(HA_WEIGHT_ENTITY) or 0.0)
+            except Exception:
+                pass
+        
+        if weight <= 0 and _state["print_weight"] > 0:
+            weight = _state["print_weight"]
+
+        if weight > 0 and active_tray != 255:
+            msg = _spool_deduct(tray=active_tray, weight_g=weight)
+            if msg:
+                spool_status += f"\n\n{msg}"
+
+    w_str = f"{weight:.1f}g" if weight > 0 else "–"
+    log.info(f"Print finished: {filename} in {dur}")
+    
     msg = t("print_done", filename=filename or "–", weight=w_str, duration=dur)
     if spool_status:
         msg += spool_status
@@ -866,6 +919,7 @@ def _on_print_finish(filename, weight):
     tg_photo(msg)
 
     _state["print_weight"] = 0  # Reset for next print
+    _state["filament_used"] = None
     
     _add_history({
         "date":     datetime.now(JERUSALEM).strftime("%Y-%m-%d %H:%M"),
@@ -958,6 +1012,9 @@ def on_message(client, userdata, msg):
 
         prev_state   = _state["gcode_state"]
         was_printing = _state["printing"]
+
+        if "filament_used" in print_data:
+            _state["filament_used"] = print_data["filament_used"]
 
         _state.update({
             "gcode_state":       gcode_state,
