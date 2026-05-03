@@ -180,11 +180,14 @@ STRINGS = {
         "ask_new_weight":    "⚖️ מהו המשקל הנותר העדכני (בגרמים) עבור ספול #{sid}?\n\n(שלח מספר, או /cancel לביטול)",
         "update_success":    "✅ ספול #{sid} עודכן בהצלחה! משקל נותר: {weight}g.",
         "update_cancel":     "❌ העדכון בוטל.",
+        "spool_loaded":      "🔄 <b>זוהה ספול חדש בסלוט {slot}</b>\nמותג: {brand}\nסוג: {type}\n\nמה תרצה לעשות?",
+        "ask_create_weight": "⚖️ מה המשקל ההתחלתי (בגרמים) עבור גליל ה- {brand} {type} החדש?\n\n(שלח מספר, או /cancel לביטול)",
+        "create_success":    "✅ ספול חדש נוצר ומופה לסלוט {slot}! מזהה ספול: #{sid}.",
         "spoolman_deduct_ok": "\n\n✅ <b>Spoolman:</b> קוזז {amount} מספול #{sid}",
         "spoolman_deduct_fail": "\n\n❌ <b>Spoolman:</b> שגיאה בקיזוז משקל מספול #{sid}",
         "low_stock":         "⚠️ ספול #{sid} ({label}) על סיום — נותר {grams}g בלבד!",
         "history_title":     "🗒️ *היסטוריית הדפסות:*\n",
-        "history_item":      "📅 {date} | {filename} | {duration} | {grams}\n",
+        "history_item":      "📅 {date} | {filename} | {duration} | {usage}\n",
         "history_empty":     "אין הדפסות שמורות.",
         "cam_ok":            "📸 {time}",
         "cam_no_entity":     "❌ לא נמצאה מצלמת Bambu ב-HA.",
@@ -269,11 +272,14 @@ STRINGS = {
         "ask_new_weight":    "⚖️ What is the actual remaining weight (in grams) for Spool #{sid}?\n\n(Send a number, or /cancel to abort)",
         "update_success":    "✅ Spool #{sid} successfully updated! Remaining weight: {weight}g.",
         "update_cancel":     "❌ Update cancelled.",
+        "spool_loaded":      "🔄 <b>New Spool Detected in Slot {slot}</b>\nBrand: {brand}\nType: {type}\n\nWhat would you like to do?",
+        "ask_create_weight": "⚖️ What is the initial weight (in grams) for the new {brand} {type} spool?\n\n(Send a number, or /cancel to abort)",
+        "create_success":    "✅ Spool successfully created and mapped to Slot {slot}! Spool #{sid}.",
         "spoolman_deduct_ok": "\n\n✅ <b>Spoolman:</b> Deducted {amount} from Spool #{sid}",
         "spoolman_deduct_fail": "\n\n❌ <b>Spoolman:</b> Failed to deduct weight from Spool #{sid}",
         "low_stock":         "⚠️ Spool #{sid} ({label}) is running low — only {grams}g left!",
         "history_title":     "🗒️ *Print History:*\n",
-        "history_item":      "📅 {date} | {filename} | {duration} | {grams}\n",
+        "history_item":      "📅 {date} | {filename} | {duration} | {usage}\n",
         "history_empty":     "No prints saved yet.",
         "cam_ok":            "📸 {time}",
         "cam_no_entity":     "❌ No Bambu camera found in Home Assistant.",
@@ -596,6 +602,7 @@ _state = {
 }
 _ams_state     = {}       # slot_id (str "0"–"3") -> {type, color, brand, remain}
 _alerted_slots = set()
+_initial_ams_sync_done = False
 _lock          = threading.Lock()
 _mqtt_client   = None
 _status_event  = threading.Event()
@@ -871,6 +878,8 @@ def _on_print_finish(filename, weight):
     filament_used = _state.get("filament_used")
     weight = _state.get("print_weight", 0.0)
     spool_status = ""
+    spools_used = []
+    mapping = load_mapping()
 
     if filament_used:
         if isinstance(filament_used, list):
@@ -879,6 +888,8 @@ def _on_print_finish(filename, weight):
                     lm = float(length_m)
                     if lm > 0:
                         msg = _spool_deduct(tray=i, length_mm=lm * 1000)
+                        val_str = f"{lm * 1000:.1f}mm"
+                        spools_used.append({"slot": i, "spool_id": mapping.get(str(i)), "amount": val_str})
                         if msg:
                             spool_status += f"\n\n{msg}"
                 except (ValueError, TypeError):
@@ -888,6 +899,8 @@ def _on_print_finish(filename, weight):
                 lm = float(filament_used)
                 if lm > 0:
                     msg = _spool_deduct(tray=active_tray, length_mm=lm * 1000)
+                    val_str = f"{lm * 1000:.1f}mm"
+                    spools_used.append({"slot": active_tray, "spool_id": mapping.get(str(active_tray)), "amount": val_str})
                     if msg:
                         spool_status += f"\n\n{msg}"
             except (ValueError, TypeError):
@@ -906,6 +919,8 @@ def _on_print_finish(filename, weight):
 
         if weight > 0 and active_tray != 255:
             msg = _spool_deduct(tray=active_tray, weight_g=weight)
+            val_str = f"{weight:.1f}g"
+            spools_used.append({"slot": active_tray, "spool_id": mapping.get(str(active_tray)), "amount": val_str})
             if msg:
                 spool_status += f"\n\n{msg}"
 
@@ -922,11 +937,12 @@ def _on_print_finish(filename, weight):
     _state["filament_used"] = None
     
     _add_history({
-        "date":     datetime.now(JERUSALEM).strftime("%Y-%m-%d %H:%M"),
-        "filename": filename or "Unknown",
-        "duration": dur or "–",
-        "grams":    weight,
-        "slot":     tray,
+        "date":        datetime.now(JERUSALEM).strftime("%Y-%m-%d %H:%M"),
+        "filename":    filename or "Unknown",
+        "duration":    dur or "–",
+        "grams":       weight,
+        "slot":        active_tray,
+        "spools_used": spools_used,
     })
 
     if tray != 255:
@@ -1065,26 +1081,49 @@ def on_message(client, userdata, msg):
 
         # ── AMS slot data ──────────────────────────────────────────────────
         ams_data = ams_block.get("ams", [])
-        for ams_unit in ams_data:
-            for tray_info in ams_unit.get("tray", []):
-                sid = tray_info.get("id")
-                if sid is None:
-                    continue
-                remain_pct = tray_info.get("remain", -1)
-                _ams_state[str(sid)] = {
-                    "type":   tray_info.get("tray_type", "Unknown"),
-                    "color":  tray_info.get("tray_color", "FFFFFF"),
-                    "brand":  tray_info.get("tray_sub_brands", ""),
-                    "remain": remain_pct,
-                }
-                # Low filament alert (native, no Spoolman mapping)
-                mapping = load_mapping()
-                if str(sid) not in mapping and 0 <= remain_pct < 10:
-                    if sid not in _alerted_slots:
-                        tg_send(t("low_filament", slot=int(sid) + 1, grams=remain_pct * 10))
-                        _alerted_slots.add(sid)
-                elif sid in _alerted_slots and remain_pct >= 10:
-                    _alerted_slots.discard(sid)
+        if ams_data:
+            global _initial_ams_sync_done
+            for ams_unit in ams_data:
+                for tray_info in ams_unit.get("tray", []):
+                    sid = tray_info.get("id")
+                    if sid is None:
+                        continue
+                    
+                    remain_pct = tray_info.get("remain", -1)
+                    tray_type = tray_info.get("tray_type", "Unknown")
+                    tray_color = tray_info.get("tray_color", "FFFFFF")
+                    tray_brand = tray_info.get("tray_sub_brands", "")
+                    
+                    old_state = _ams_state.get(str(sid), {})
+                    old_remain = old_state.get("remain", -1)
+
+                    _ams_state[str(sid)] = {
+                        "type":   tray_type,
+                        "color":  tray_color,
+                        "brand":  tray_brand,
+                        "remain": remain_pct,
+                    }
+                    
+                    # Detect Spool Insertion
+                    if _initial_ams_sync_done and old_remain < 0 and remain_pct >= 0:
+                        msg = t("spool_loaded", slot=int(sid) + 1, brand=tray_brand or "Generic", type=tray_type)
+                        kb = telebot.types.InlineKeyboardMarkup()
+                        kb.row(
+                            telebot.types.InlineKeyboardButton("🔗 Map to Spoolman", callback_data=f"map_{sid}"),
+                            telebot.types.InlineKeyboardButton("➕ Create New Spool", callback_data=f"create_spool_{sid}")
+                        )
+                        tg_send(msg, reply_markup=kb)
+
+                    # Low filament alert (native, no Spoolman mapping)
+                    mapping = load_mapping()
+                    if str(sid) not in mapping and 0 <= remain_pct < 10:
+                        if sid not in _alerted_slots:
+                            tg_send(t("low_filament", slot=int(sid) + 1, grams=remain_pct * 10))
+                            _alerted_slots.add(sid)
+                    elif sid in _alerted_slots and remain_pct >= 10:
+                        _alerted_slots.discard(sid)
+
+            _initial_ams_sync_done = True
 
 
 # ── Bot Commands ──────────────────────────────────────────────────────────────
@@ -1313,12 +1352,24 @@ def cmd_history(message):
     last10 = history[-10:][::-1]
     res = t("history_title")
     for e in last10:
-        grams = f"{float(e.get('grams', 0)):.1f}g" if e.get("grams") else "–"
+        spools_used = e.get("spools_used", [])
+        if spools_used:
+            usage_parts = []
+            for su in spools_used:
+                slot_txt = f"Slot {su.get('slot', '?')}"
+                spool_id = su.get('spool_id')
+                if spool_id:
+                    slot_txt += f" (# {spool_id})"
+                usage_parts.append(f"{su.get('amount', '?')} ({slot_txt})")
+            usage_str = ", ".join(usage_parts)
+        else:
+            usage_str = f"{float(e.get('grams', 0)):.1f}g" if e.get("grams") else "–"
+
         res  += t("history_item",
                   date=e.get("date", "?"),
                   filename=(e.get("filename", "?"))[:22],
                   duration=e.get("duration", "?"),
-                  grams=grams)
+                  usage=usage_str)
     bot.reply_to(message, res)
 
 
@@ -1569,6 +1620,69 @@ def cmd_update(message):
 
     markup.add(*btns)
     bot.send_message(message.chat.id, t("ask_update_spool"), parse_mode="HTML", reply_markup=markup)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("create_spool_"))
+def cb_create_spool(call):
+    if not chat_ok(call.message):
+        return
+    slot = call.data.split("_")[2]
+    
+    ams_info = _ams_state.get(str(slot), {})
+    brand = ams_info.get("brand") or "Generic"
+    material = ams_info.get("type") or "Unknown"
+    color = ams_info.get("color", "FFFFFF")[:6]
+    
+    try:
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    except:
+        pass
+        
+    msg = bot.send_message(call.message.chat.id, t("ask_create_weight", brand=brand, type=material))
+    bot.register_next_step_handler(msg, process_spool_create_weight, slot, brand, material, color)
+    bot.answer_callback_query(call.id)
+
+def process_spool_create_weight(message, slot, brand, material, color):
+    if message.text and message.text.strip().lower() == "/cancel":
+        bot.reply_to(message, t("update_cancel"))
+        return
+        
+    try:
+        weight = float(message.text.strip())
+        if weight <= 0:
+            raise ValueError()
+            
+        fil_payload = {
+            "name": f"{brand} {material}",
+            "material": material,
+            "color_hex": color,
+        }
+        if brand and brand != "Generic":
+            fil_payload["vendor"] = {"name": brand}
+
+        fil_res = _spoolman_post("/api/v1/filament", fil_payload)
+        if not fil_res or not fil_res.get("id"):
+            bot.reply_to(message, t("set_fail"))
+            return
+
+        payload = {
+            "filament_id": fil_res["id"],
+            "initial_weight": weight,
+        }
+        result = _spoolman_post("/api/v1/spool", payload)
+        if not result or not result.get("id"):
+            bot.reply_to(message, t("set_fail"))
+            return
+
+        spool_id = result["id"]
+        mapping  = load_mapping()
+        mapping[str(slot)] = spool_id
+        save_mapping(mapping)
+        
+        bot.reply_to(message, t("create_success", slot=int(slot)+1, sid=spool_id))
+    except ValueError:
+        msg = bot.reply_to(message, t("invalid_number"))
+        bot.register_next_step_handler(msg, process_spool_create_weight, slot, brand, material, color)
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("update_"))
