@@ -964,7 +964,7 @@ _RC_CODES = {
     2: "Invalid client identifier",
     3: "Server unavailable",
     4: "Bad username or password — check your printer Access Code",
-    5: "Not authorised",
+    5: "Not authorised — check printer Access Code (Access Code on printer screen)",
 }
 
 
