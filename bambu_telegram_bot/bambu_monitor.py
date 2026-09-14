@@ -4,10 +4,11 @@ Bambu Lab Telegram Monitor — Home Assistant Add-on
 Clean rewrite. Supports A1/P1/X1 via local or cloud MQTT.
 """
 
-import os, sys, json, html, ssl, socket, threading, logging, requests, yaml, time
+import os, sys, json, html, ssl, threading, logging, requests, yaml, time
 from datetime import datetime, timedelta, timezone
+from spool_wizard import SpoolWizard
 
-VERSION = "2.0.8"
+VERSION = "2.0.11"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:
@@ -116,6 +117,7 @@ def setup_bot_commands():
         telebot.types.BotCommand("resume", "Resume paused print"),
         telebot.types.BotCommand("cancel", "Cancel print (asks confirmation)"),
         telebot.types.BotCommand("spools", "List Spoolman inventory"),
+        telebot.types.BotCommand("addspool", "Add spool: material, color, weight"),
         telebot.types.BotCommand("map", "Map slot to existing spool"),
         telebot.types.BotCommand("set", "Create new spool and map slot"),
         telebot.types.BotCommand("update", "Update spool remaining weight"),
@@ -135,7 +137,7 @@ setup_bot_commands()
 # ── Localisation ─────────────────────────────────────────────────────────────
 STRINGS = {
     "he": {
-        "connected":         "✅ המדפסת מחוברת · v{version}",
+        "connected":         "✅ המדפסת מחוברת ({mode}) · v{version}",
         "mqtt_failed":       "❌ חיבור MQTT נכשל: {reason}",
         "disconnected":      "🔴 הבוט הופסק.",
         "print_start":       "🖨️ ההדפסה התחילה!\n📄 קובץ: {filename}\n⚖️ משקל צפוי: {weight}\n⏱️ ETA: {eta} | יסיים ב: {finish}",
@@ -222,12 +224,13 @@ STRINGS = {
             "/update — עדכון ידני של משקל ספול\n\n"
             "🔦 <b>כלים</b>\n"
             "/light — הדלקה/כיבוי נורה\n"
+            "/addspool — הוספת ספול לפי חומר, צבע ומשקל\n"
             "/debug — נתוני MQTT גולמיים\n"
             "/help — תפריט זה"
         ),
     },
     "en": {
-        "connected":         "✅ Printer connected · v{version}",
+        "connected":         "✅ Printer connected ({mode}) · v{version}",
         "mqtt_failed":       "❌ MQTT connection failed: {reason}",
         "disconnected":      "🔴 Bot stopped.",
         "print_start":       "🖨️ Print started!\n📄 File: {filename}\n⚖️ Est. filament: {weight}\n⏱️ ETA: {eta} | Finishes at: {finish}",
@@ -314,6 +317,7 @@ STRINGS = {
             "/update — Manually update a spool's remaining weight\n\n"
             "🔦 <b>Tools</b>\n"
             "/light — Toggle printer lamp\n"
+            "/addspool — Add spool with color and weight\n"
             "/debug — Raw MQTT data for troubleshooting\n"
             "/help — Show this menu"
         ),
@@ -965,17 +969,25 @@ _RC_CODES = {
 
 
 def on_connect(client, userdata, flags, rc):
+    global _mqtt_client
+    userdata["rc"] = rc
+    mode = userdata["mode"]
     if rc == 0:
+        _mqtt_client = client
         topic = f"device/{PRINTER_SERIAL}/report"
         client.subscribe(topic)
         log.info(f"MQTT connected ✓ subscribed to {topic}")
-        tg_send(t("connected", version=VERSION))
+        tg_send(t("connected", version=VERSION, mode=mode))
         # Request full state dump 2s after connect (gives printer time to respond)
         threading.Timer(2.0, request_pushall).start()
     else:
         reason = _RC_CODES.get(rc, f"Unknown error (rc={rc})")
+        if mode == "Cloud" and rc in (4, 5):
+            reason = "Cloud authentication rejected — check your Bambu account credentials"
+        reason = f"{mode}: {reason}"
         log.error(f"MQTT connect failed: {reason}")
         tg_send(t("mqtt_failed", reason=reason))
+        client.disconnect()
 
 
 def on_disconnect(client, userdata, rc):
@@ -1128,6 +1140,11 @@ def on_message(client, userdata, msg):
 
 # ── Bot Commands ──────────────────────────────────────────────────────────────
 
+_spool_wizard = SpoolWizard(bot, telebot.types, TELEGRAM_CHAT_ID, LANGUAGE,
+                            bool(SPOOLMAN_URL), _spoolman_post)
+_spool_wizard.register()
+
+
 @bot.message_handler(commands=["start", "help"])
 def cmd_help(message):
     if not chat_ok(message):
@@ -1244,7 +1261,7 @@ def cmd_ams(message):
                     emoji = color_to_emoji(color_hex)
                     cname = hex_to_color_name(color_hex)
                     color_str = f"({cname})" if cname else ""
-                    brand = fil.get("vendor", {}).get("name", "Unknown")
+                    brand = (fil.get("vendor") or {}).get("name", "Unknown")
                     mat   = fil.get("material", "")
                     filname = fil.get("name", "")
                     rem_w = data.get("remaining_weight")
@@ -1305,7 +1322,7 @@ def cb_map(call):
         fil = s.get("filament", {})
         color_hex = fil.get("color_hex", "")
         emoji = color_to_emoji(color_hex)
-        brand = fil.get("vendor", {}).get("name", "Unknown")
+        brand = (fil.get("vendor") or {}).get("name", "Unknown")
         mat = fil.get("material", "Unknown")
         name = fil.get("name", "")
         
@@ -1484,7 +1501,7 @@ def cmd_spools(message):
             continue
         fil   = s.get("filament", {})
         emoji = color_to_emoji(fil.get("color_hex", ""))
-        brand = fil.get("vendor", {}).get("name", "Unknown")
+        brand = (fil.get("vendor") or {}).get("name", "Unknown")
         mat   = fil.get("material", "Unknown")
         res  += t("spools_item", id=s.get("id"), emoji=emoji, brand=brand, material=mat, grams=rem)
     if len(res) > 4000:
@@ -1608,7 +1625,7 @@ def cmd_update(message):
         fil = s.get("filament", {})
         color_hex = fil.get("color_hex", "")
         emoji = color_to_emoji(color_hex)
-        brand = fil.get("vendor", {}).get("name", "Unknown")
+        brand = (fil.get("vendor") or {}).get("name", "Unknown")
         mat = fil.get("material", "Unknown")
         name = fil.get("name", "")
         
@@ -1744,7 +1761,7 @@ def cmd_debug(message):
 
 
 # ── MQTT Connection ───────────────────────────────────────────────────────────
-def _make_client() -> mqtt.Client:
+def _make_client(cloud=False) -> mqtt.Client:
     # Handle paho-mqtt v1 vs v2 API differences gracefully
     try:
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
@@ -1753,30 +1770,48 @@ def _make_client() -> mqtt.Client:
     client.on_connect    = on_connect
     client.on_disconnect = on_disconnect
     client.on_message    = on_message
-    client.tls_set(cert_reqs=ssl.CERT_NONE)
-    client.tls_insecure_set(True)
+    if cloud:
+        client.tls_set()
+    else:
+        client.tls_set(cert_reqs=ssl.CERT_NONE)
+        client.tls_insecure_set(True)
+    client.reconnect_delay_set(min_delay=1, max_delay=30)
     return client
+
+
+def _connect_mqtt(host, username, password, mode):
+    """Return a client only after the broker acknowledges authentication."""
+    client = _make_client(cloud=mode == "Cloud")
+    status = {"mode": mode, "rc": None}
+    client.user_data_set(status)
+    client.username_pw_set(username, password)
+    try:
+        client.connect(host, 8883, keepalive=60)
+        deadline = time.monotonic() + 10
+        while status["rc"] is None and time.monotonic() < deadline:
+            result = client.loop(timeout=1.0)
+            if result != mqtt.MQTT_ERR_SUCCESS and status["rc"] is None:
+                raise ConnectionError(f"network error ({result})")
+        if status["rc"] == 0:
+            return client
+        if status["rc"] is None:
+            raise TimeoutError("broker did not acknowledge the connection within 10 seconds")
+    except (OSError, RuntimeError) as error:
+        log.error(f"{mode} MQTT connection failed: {error}")
+        tg_send(t("mqtt_failed", reason=f"{mode}: {error}"))
+    client.disconnect()
+    return None
 
 
 def _connect_local():
-    log.info(f"Testing local MQTT at {PRINTER_IP}:8883 …")
-    try:
-        s = socket.create_connection((PRINTER_IP, 8883), timeout=5)
-        s.close()
-    except Exception as e:
-        log.warning(f"Local MQTT port not reachable: {e}")
-        return None
-    client = _make_client()
-    client.username_pw_set("bblp", PRINTER_PASSWORD)
-    log.info("Connecting via LOCAL MQTT…")
-    client.connect(PRINTER_IP, 8883, keepalive=60)
-    return client
+    log.info(f"Connecting via LOCAL MQTT at {PRINTER_IP}:8883 …")
+    return _connect_mqtt(PRINTER_IP, "bblp", PRINTER_PASSWORD, "Local")
 
 
 def _connect_cloud():
     if not BAMBU_USERNAME or not BAMBU_PASSWORD_ or "example.com" in BAMBU_USERNAME:
         msg = (
-            "❌ Local MQTT unreachable and Cloud credentials not configured.\n"
+            "❌ Local MQTT failed and Cloud credentials not configured.\n"
             "Check printer_ip and bambu_username / bambu_password in Add-on settings."
         )
         log.error(msg)
@@ -1790,22 +1825,28 @@ def _connect_cloud():
             json={"account": BAMBU_USERNAME, "password": BAMBU_PASSWORD_},
             timeout=15,
         )
+        r.raise_for_status()
         data  = r.json()
         token = data.get("accessToken") or data.get("token")
         if not token:
-            log.error(f"No token in response: {data}")
-            tg_send("❌ Failed to get Bambu Cloud token. Check bambu_username and bambu_password.")
+            log.error("Cloud login returned no access token (additional verification may be required)")
+            tg_send("❌ Bambu Cloud login returned no access token. Check your credentials; accounts requiring email or two-factor verification are not supported by this login flow.")
             return None
+        profile = requests.get(
+            "https://api.bambulab.com/v1/design-user-service/my/preference",
+            headers={"Authorization": f"Bearer {token}"}, timeout=15,
+        )
+        profile.raise_for_status()
+        uid = profile.json().get("uid")
+        if uid is None:
+            raise ValueError("Cloud account response did not include a user ID")
     except Exception as e:
         log.error(f"Cloud token fetch failed: {e}")
         tg_send(f"❌ Bambu Cloud login failed: {e}")
         return None
 
-    client = _make_client()
-    client.username_pw_set("bblp", token)
     log.info("Connecting via CLOUD MQTT…")
-    client.connect("us.mqtt.bambulab.com", 8883, keepalive=60)
-    return client
+    return _connect_mqtt("us.mqtt.bambulab.com", f"u_{uid}", token, "Cloud")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -1817,22 +1858,29 @@ def main():
     threading.Thread(target=bot.infinity_polling, daemon=True, name="tg-polling").start()
     log.info("Telegram polling started")
 
-    # Try local MQTT first, fall back to Bambu Cloud
     global _mqtt_client
-    client = _connect_local() or _connect_cloud()
-
-    if not client:
-        msg = "❌ Could not connect to printer MQTT. Check HA Add-on logs."
-        log.error(msg)
-        tg_send(msg)
-        sys.exit(1)
-
-    _mqtt_client = client
-    log.info("Entering MQTT loop…")
+    client = None
     try:
-        # reconnect_delay_max added in paho 2.x — use plain loop_forever for compat
-        client.loop_forever()
+        while True:
+            # Wait for broker acceptance before deciding whether cloud is needed.
+            client = _connect_local() or _connect_cloud()
+            if not client:
+                log.error("Neither MQTT connection succeeded; retrying in 30 seconds")
+                time.sleep(30)
+                continue
+            _mqtt_client = client
+            log.info("Entering MQTT loop…")
+            # Paho restores subscriptions via on_connect after transient drops.
+            # Authentication rejection calls disconnect and returns here so we
+            # can try both connections again, including a fresh cloud login.
+            client.loop_forever()
+            _mqtt_client = None
+            client.disconnect()
+            time.sleep(30)
     except KeyboardInterrupt:
+        if client:
+            client.disconnect()
+        _mqtt_client = None
         tg_send(t("disconnected"))
         log.info("Stopped by user.")
 

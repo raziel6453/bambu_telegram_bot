@@ -1,7 +1,4 @@
 paho-mqtt
 requests
-flask
-flask-cors
-psutil
 pyTelegramBotAPI
 PyYAML

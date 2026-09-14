@@ -44,19 +44,56 @@ A Telegram bot that monitors your **Bambu Lab 3D printer** (A1 / P1 / X1 series)
    cd bambu_telegram_bot
    ```
 
-2. **Configure**: Edit `options:` in `bambu_telegram_bot/config.yaml` or create `options.json`.
+2. **Choose Docker or Python below.** Copy the example configuration and replace the
+   placeholders with your printer and Telegram details. Cloud credentials and
+   Spoolman are optional. Camera and light features require the Home Assistant
+   add-on's Supervisor API.
 
-3. **Run with Docker**:
+3. **Run with Docker** (from the repository root):
+   ```bash
+   mkdir -p data
+   cp options.example.json data/options.json
+   ```
+   Edit `data/options.json`, then run:
    ```bash
    docker build -t bambu-monitor ./bambu_telegram_bot
-   docker run -d --name bambu-monitor bambu-monitor
+   docker run -d --name bambu-monitor --restart unless-stopped \
+     -v "$(pwd)/data:/data" bambu-monitor
    ```
+   The mounted `data` folder preserves configuration, spool mappings, and print
+   history when you replace the container. After pulling an update, rebuild the
+   image, run `docker rm -f bambu-monitor`, and repeat the run command above.
 
-4. **Run with Python**:
+4. **Run with Python 3.11+** (from the repository root):
    ```bash
-   pip install -r requirements.txt
+   python3 -m venv .venv
+   . .venv/bin/activate
+   python -m pip install -r bambu_telegram_bot/requirements.txt
+   cp options.example.json bambu_telegram_bot/options.json
+   ```
+   Edit `bambu_telegram_bot/options.json`, then run:
+   ```bash
+   cd bambu_telegram_bot
    python bambu_monitor.py
    ```
+   Keep this working directory: standalone configuration and saved state are
+   loaded from it. After an update, stop the bot and run it again.
+
+   Personal configuration and generated state files are ignored by Git. Keep
+   credentials out of the tracked add-on `config.yaml` defaults.
+
+### Development checks
+
+From the repository root, run the offline regression tests:
+
+```bash
+python3 -B -m unittest discover -s tests -v
+```
+
+These tests simulate printer and service responses and do not need credentials.
+For each release, keep `version` in `bambu_telegram_bot/config.yaml` and `VERSION`
+in `bambu_telegram_bot/bambu_monitor.py` identical. Home Assistant detects add-on
+updates through the configuration version.
 
 ---
 
@@ -85,6 +122,7 @@ A Telegram bot that monitors your **Bambu Lab 3D printer** (A1 / P1 / X1 series)
 | Command | Description |
 |---------|-------------|
 | `/spools` | List all spools in your Spoolman inventory |
+| `/addspool` | Guided creation: choose material, color and weight, then save to inventory |
 | `/map [slot] [spool_id]` | Interactive mode: Run without arguments to pick slot and spool via buttons, or provide arguments for quick mapping |
 | `/set <slot> <brand> <material>` | Create a new spool in Spoolman and map the slot automatically |
 | `/update` | Interactive mode: Select a spool and manually update its remaining weight via chat |
@@ -99,6 +137,25 @@ A Telegram bot that monitors your **Bambu Lab 3D printer** (A1 / P1 / X1 series)
 ---
 
 ## 🧵 Spoolman Integration
+
+### Easy spool creation
+
+Send `/addspool` (also available in the bot command menu):
+
+1. Choose PLA, PETG, ABS, ASA or TPU.
+2. Tap a color, or type a custom six-digit hex color such as `#12ABEF`.
+3. Tap 250g, 500g or 1000g, or type the filament weight in grams. Exclude the empty spool's weight.
+4. Review the details and tap **Save**. Nothing is created until you save.
+
+The spool is added to inventory immediately. You can optionally map it to an AMS
+slot using the buttons in the success message. Tap **Cancel** or send `/cancel`
+while the draft is active to abandon it. Drafts expire after 15 minutes and are
+not saved across bot restarts. The flow supports Hebrew and English.
+
+New filaments use a 1.75 mm diameter and a typical density for the chosen material.
+Adjust these in Spoolman for unusual blends or sizes, since density affects
+length-to-weight conversion. Spools are created without a brand; you can add it
+in Spoolman later.
 
 If you run [Spoolman](https://github.com/Donkie/Spoolman) for filament tracking:
 

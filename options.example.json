@@ -1,0 +1,12 @@
+{
+  "printer_ip": "192.168.1.50",
+  "printer_serial": "YOUR_PRINTER_SERIAL",
+  "printer_password": "YOUR_PRINTER_ACCESS_CODE",
+  "telegram_token": "YOUR_TELEGRAM_BOT_TOKEN",
+  "telegram_chat_id": "YOUR_CHAT_ID",
+  "bambu_username": "",
+  "bambu_password": "",
+  "spoolman_url": "",
+  "low_stock_threshold": 100,
+  "language": "he"
+}
