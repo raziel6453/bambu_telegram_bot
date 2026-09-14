@@ -7,7 +7,7 @@ Clean rewrite. Supports A1/P1/X1 via local or cloud MQTT.
 import os, sys, json, html, ssl, socket, threading, logging, requests, yaml, time
 from datetime import datetime, timedelta, timezone
 
-VERSION = "2.0.6"
+VERSION = "2.0.7"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:
@@ -827,6 +827,8 @@ def _on_print_start(mc_percent, mc_remaining, filename, weight):
                 time.sleep(1)
     if weight <= 0 and _state.get("print_weight", 0) > 0:
         weight = _state["print_weight"]
+    if weight > 0:
+        _state["print_weight"] = weight
 
     rem   = smart_remaining()
     w_str = f"{weight:.1f}g" if weight > 0 else "–"
@@ -858,6 +860,8 @@ def _on_reconnect_recovery(mc_percent, mc_remaining):
 
 def _on_print_finish(filename, weight):
     _state["printing"] = False
+    if weight <= 0:
+        weight = _state.get("print_weight", 0.0)
     
     if weight <= 0:
         if HA_AVAILABLE:
@@ -876,7 +880,6 @@ def _on_print_finish(filename, weight):
     
     # ── Deduct from Spoolman ─────────────────────────────────────────────────
     filament_used = _state.get("filament_used")
-    weight = _state.get("print_weight", 0.0)
     spool_status = ""
     spools_used = []
     mapping = load_mapping()
@@ -906,17 +909,10 @@ def _on_print_finish(filename, weight):
             except (ValueError, TypeError):
                 pass
 
-    if not spool_status:
-        # Fallback to weight deduction if filament_used was not present or failed
-        if weight <= 0.0 and HA_WEIGHT_ENTITY and "homeassistant" in sys.modules:
-            try:
-                weight = float(sys.modules["homeassistant"].get_state(HA_WEIGHT_ENTITY) or 0.0)
-            except Exception:
-                pass
-        
-        if weight <= 0 and _state["print_weight"] > 0:
-            weight = _state["print_weight"]
-
+    if not spools_used:
+        # Use total weight only when no positive filament lengths were reported.
+        # Missing mappings or failed requests must not charge another spool or
+        # repeat a deduction that may already have reached Spoolman.
         if weight > 0 and active_tray != 255:
             msg = _spool_deduct(tray=active_tray, weight_g=weight)
             val_str = f"{weight:.1f}g"
