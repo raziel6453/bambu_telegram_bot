@@ -7,7 +7,7 @@ Clean rewrite. Supports A1/P1/X1 via local or cloud MQTT.
 import os, sys, json, html, ssl, socket, threading, logging, requests, yaml, time
 from datetime import datetime, timedelta, timezone
 
-VERSION = "2026-05-03.v3"
+VERSION = "2.0.6"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:
