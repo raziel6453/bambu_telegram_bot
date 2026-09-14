@@ -642,9 +642,9 @@ def _persist_state():
 
 
 # ── Telegram Helpers ──────────────────────────────────────────────────────────
-def tg_send(text: str):
+def tg_send(text: str, reply_markup=None):
     try:
-        bot.send_message(TELEGRAM_CHAT_ID, text)
+        bot.send_message(TELEGRAM_CHAT_ID, text, reply_markup=reply_markup)
     except Exception as e:
         log.error(f"Telegram send failed: {e}")
 
@@ -1112,7 +1112,8 @@ def on_message(client, userdata, msg):
                         msg = t("spool_loaded", slot=int(sid) + 1, brand=tray_brand or "Generic", type=tray_type)
                         kb = telebot.types.InlineKeyboardMarkup()
                         kb.row(
-                            telebot.types.InlineKeyboardButton("🔗 Map to Spoolman", callback_data=f"map_{sid}"),
+                            # Mapping callbacks use display slots (1–4); creation uses tray IDs (0–3).
+                            telebot.types.InlineKeyboardButton("🔗 Map to Spoolman", callback_data=f"map_{int(sid) + 1}"),
                             telebot.types.InlineKeyboardButton("➕ Create New Spool", callback_data=f"create_spool_{sid}")
                         )
                         tg_send(msg, reply_markup=kb)
