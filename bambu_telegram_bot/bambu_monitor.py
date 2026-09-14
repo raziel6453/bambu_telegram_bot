@@ -7,7 +7,7 @@ Clean rewrite. Supports A1/P1/X1 via local or cloud MQTT.
 import os, sys, json, html, ssl, socket, threading, logging, requests, yaml, time
 from datetime import datetime, timedelta, timezone
 
-VERSION = "2.0.7"
+VERSION = "2.0.8"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:
@@ -135,7 +135,7 @@ setup_bot_commands()
 # ── Localisation ─────────────────────────────────────────────────────────────
 STRINGS = {
     "he": {
-        "connected":         "✅ הבוט מחובר ועובד!\nסדרתי: {serial}\nגרסה: {version}",
+        "connected":         "✅ המדפסת מחוברת · v{version}",
         "mqtt_failed":       "❌ חיבור MQTT נכשל: {reason}",
         "disconnected":      "🔴 הבוט הופסק.",
         "print_start":       "🖨️ ההדפסה התחילה!\n📄 קובץ: {filename}\n⚖️ משקל צפוי: {weight}\n⏱️ ETA: {eta} | יסיים ב: {finish}",
@@ -227,7 +227,7 @@ STRINGS = {
         ),
     },
     "en": {
-        "connected":         "✅ Bot connected and running!\nSerial: {serial}\nVersion: {version}",
+        "connected":         "✅ Printer connected · v{version}",
         "mqtt_failed":       "❌ MQTT connection failed: {reason}",
         "disconnected":      "🔴 Bot stopped.",
         "print_start":       "🖨️ Print started!\n📄 File: {filename}\n⚖️ Est. filament: {weight}\n⏱️ ETA: {eta} | Finishes at: {finish}",
@@ -969,7 +969,7 @@ def on_connect(client, userdata, flags, rc):
         topic = f"device/{PRINTER_SERIAL}/report"
         client.subscribe(topic)
         log.info(f"MQTT connected ✓ subscribed to {topic}")
-        tg_send(t("connected", serial=PRINTER_SERIAL, version=VERSION))
+        tg_send(t("connected", version=VERSION))
         # Request full state dump 2s after connect (gives printer time to respond)
         threading.Timer(2.0, request_pushall).start()
     else:
