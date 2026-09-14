@@ -22,6 +22,7 @@ class MqttConnectionTest(unittest.TestCase):
             "BAMBU_USERNAME": "user@bambu.invalid", "BAMBU_PASSWORD_": "password",
             "requests": Mock(), "t": lambda key, **kw: f"{key}: {kw}",
             "DATA_DIR": ".", "_restore_state": Mock(), "bot": Mock(),
+            "start_inventory_share": Mock(), "options": {}, "SPOOLMAN_URL": "http://spoolman.invalid",
         }
         self.env["time"].monotonic.return_value = 0
         path = Path(__file__).resolve().parents[1] / "bambu_telegram_bot" / "bambu_monitor.py"

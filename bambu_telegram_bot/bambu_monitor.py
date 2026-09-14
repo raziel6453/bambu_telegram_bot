@@ -7,8 +7,9 @@ Clean rewrite. Supports A1/P1/X1 via local or cloud MQTT.
 import os, sys, json, html, ssl, threading, logging, requests, yaml, time
 from datetime import datetime, timedelta, timezone
 from spool_wizard import SpoolWizard
+from inventory_share import start_inventory_share
 
-VERSION = "2.0.11"
+VERSION = "2.0.12"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:
@@ -1853,6 +1854,10 @@ def _connect_cloud():
 def main():
     log.info(f"Data dir: {DATA_DIR}")
     _restore_state()
+    share_stop = start_inventory_share(
+        SPOOLMAN_URL, options.get("inventory_share_url", "").strip(),
+        options.get("inventory_share_token", "").strip(),
+    )
 
     # Start Telegram polling in background thread
     threading.Thread(target=bot.infinity_polling, daemon=True, name="tg-polling").start()
@@ -1883,6 +1888,8 @@ def main():
         _mqtt_client = None
         tg_send(t("disconnected"))
         log.info("Stopped by user.")
+    finally:
+        share_stop.set()
 
 
 if __name__ == "__main__":

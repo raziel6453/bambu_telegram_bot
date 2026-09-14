@@ -273,3 +273,29 @@ MIT — feel free to use, modify, and distribute.
 - [Bambu Lab](https://bambulab.com) for their excellent printers
 - [Spoolman](https://github.com/Donkie/Spoolman) for open-source filament management
 - [pyTelegramBotAPI](https://github.com/eternnoir/pyTelegramBotAPI) for the Telegram library
+
+
+## Read-only inventory sharing (v2.0.12)
+
+An optional sharing website lets anyone with its link view spool brands, filament names,
+materials, colors, and remaining weights without a Home Assistant account. Visitors
+cannot edit Spoolman or control the printer. Locations, notes, prices, and connection
+credentials are excluded from the published snapshot.
+
+Configure these two add-on options after setting up a compatible sharing website:
+
+```yaml
+inventory_share_url: "https://your-sharing-site.example"
+inventory_share_token: "your-private-upload-key"
+```
+
+Keep your existing `spoolman_url`. Save and restart the bot. It uploads immediately
+and every five minutes; the website checks for updates every minute. The private
+upload key must match the site's `INVENTORY_SYNC_TOKEN` secret. Never share this key
+with viewers. The upload endpoint is `/api/sync`; public reads use `/api/inventory`.
+
+Sharing is disabled by default. Clear either sharing option and restart to stop future
+uploads. This does not delete the last published snapshot or revoke public access;
+change the website's access settings separately when you want to stop sharing.
+If Spoolman or the sharing service is unavailable, the bot retries after five minutes
+and the website retains its last successful snapshot with a last-synced time.
