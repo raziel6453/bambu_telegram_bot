@@ -9,10 +9,13 @@ from datetime import datetime, timedelta, timezone
 from spool_wizard import SpoolWizard
 from inventory_share import start_inventory_share
 from printer_diagnostics import PrinterDiagnostics
+from pause_reason import PauseReason
+
+_pause_reason = PauseReason()
 
 _diagnostics = PrinterDiagnostics()
 
-VERSION = "2.0.13"
+VERSION = "2.0.14"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:
@@ -148,7 +151,7 @@ STRINGS = {
         "print_start":       "🖨️ ההדפסה התחילה!\n📄 קובץ: {filename}\n⚖️ משקל צפוי: {weight}\n⏱️ ETA: {eta} | יסיים ב: {finish}",
         "print_done":        "✅ ההדפסה הסתיימה!\n📄 קובץ: {filename}\n🧵 חוט שהשתמש: {weight}\n⏱️ סה\"כ זמן: {duration}",
         "print_failed":      "❌ ההדפסה נכשלה.\n📄 קובץ: {filename}",
-        "print_paused":      "⏸️ ההדפסה הושהתה.\n📄 קובץ: {filename} | {pct}% (שכבה {layer}/{total_layers})",
+        "print_paused":      "⏸️ ההדפסה הושהתה.\n📄 קובץ: {filename} | {pct}% (שכבה {layer}/{total_layers})\n🔎 {reason}",
         "print_resumed":     "▶️ ההדפסה חזרה.\n📄 קובץ: {filename}",
         "progress":          "📊 התקדמות: {pct}% (שכבה {layer}/{total_layers})\n⏱️ נותר: {remaining} | יסיים ב: {finish}",
         "status_printing":   (
@@ -241,7 +244,7 @@ STRINGS = {
         "print_start":       "🖨️ Print started!\n📄 File: {filename}\n⚖️ Est. filament: {weight}\n⏱️ ETA: {eta} | Finishes at: {finish}",
         "print_done":        "✅ Print finished!\n📄 File: {filename}\n🧵 Filament used: {weight}\n⏱️ Total time: {duration}",
         "print_failed":      "❌ Print failed.\n📄 File: {filename}",
-        "print_paused":      "⏸️ Print paused.\n📄 File: {filename} | {pct}% (Layer {layer}/{total_layers})",
+        "print_paused":      "⏸️ Print paused.\n📄 File: {filename} | {pct}% (Layer {layer}/{total_layers})\n🔎 {reason}",
         "print_resumed":     "▶️ Print resumed.\n📄 File: {filename}",
         "progress":          "📊 Progress: {pct}% (Layer {layer}/{total_layers})\n⏱️ Remaining: {remaining} | Finishes at: {finish}",
         "status_printing":   (
@@ -1048,6 +1051,7 @@ def on_message(client, userdata, msg):
 
         prev_state   = _state["gcode_state"]
         was_printing = _state["printing"]
+        _pause_reason.update(print_data, gcode_state, prev_state)
 
         if "filament_used" in print_data:
             _state["filament_used"] = print_data["filament_used"]
@@ -1094,10 +1098,15 @@ def on_message(client, userdata, msg):
             _persist_state()
 
         elif gcode_state == "PAUSE" and was_printing and prev_state == "RUNNING":
-            tg_send(t("print_paused", filename=filename or "–", pct=mc_percent, layer=_state.get("layer_num", 0), total_layers=_state.get("total_layer_num", 0)))
+            tg_send(t("print_paused", filename=filename or "–", pct=mc_percent, layer=_state.get("layer_num", 0), total_layers=_state.get("total_layer_num", 0), reason=_pause_reason.describe(LANGUAGE, _state.get("tray_now"))))
+            _pause_reason.announced = _pause_reason.code
 
         elif gcode_state == "RUNNING" and prev_state == "PAUSE":
             tg_send(t("print_resumed", filename=filename or "–"))
+
+        if gcode_state == "PAUSE" and prev_state == "PAUSE" and _pause_reason.code and _pause_reason.announced is not None and _pause_reason.announced != _pause_reason.code:
+            tg_send("⏸️ 🔎 " + _pause_reason.describe(LANGUAGE, _state.get("tray_now")))
+            _pause_reason.announced = _pause_reason.code
 
         # ── AMS slot data ──────────────────────────────────────────────────
         ams_data = ams_block.get("ams", [])

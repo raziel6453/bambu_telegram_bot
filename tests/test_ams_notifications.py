@@ -30,7 +30,7 @@ class AmsNotificationsTest(unittest.TestCase):
         self.mapping = {}
         self.bot = Mock()
         self.env = {
-            "_diagnostics": Mock(),
+            "_diagnostics": Mock(), "_pause_reason": Mock(),
             "json": json,
             "_lock": threading.Lock(),
             "_status_event": threading.Event(),

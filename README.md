@@ -309,3 +309,14 @@ it does not load filament, pause, resume, or change printer settings. A timeout 
 explicitly and any retained readings are labeled cached. Serial numbers, IP addresses,
 access codes and unrelated MQTT fields are excluded. These diagnostics do not establish
 support for choosing another AMS slot after a runout.
+
+
+## Pause reasons (v2.0.14)
+
+Pause notifications now include the printer-reported reason in English or Hebrew.
+Known AMS runout codes show a filament-runout explanation and the active slot when
+available. Other errors show their hexadecimal code and direct you to the printer
+or Bambu Handy. Missing errors are explicitly marked as unreported, not assumed to
+be a manual pause. A reason received after the pause generates one follow-up per
+changed nonzero error code. Recently reported errors are retained across partial
+MQTT messages; old errors and errors from a resumed print are cleared.

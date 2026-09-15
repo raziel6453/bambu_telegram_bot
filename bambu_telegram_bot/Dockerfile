@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY bambu_monitor.py /app/bambu_monitor.py
 COPY spool_wizard.py /app/spool_wizard.py
+COPY pause_reason.py /app/pause_reason.py
 COPY printer_diagnostics.py /app/printer_diagnostics.py
 COPY inventory_share.py /app/inventory_share.py
 COPY run.sh /app/run.sh
