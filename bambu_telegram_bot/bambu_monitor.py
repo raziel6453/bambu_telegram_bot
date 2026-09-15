@@ -8,8 +8,11 @@ import os, sys, json, html, ssl, threading, logging, requests, yaml, time
 from datetime import datetime, timedelta, timezone
 from spool_wizard import SpoolWizard
 from inventory_share import start_inventory_share
+from printer_diagnostics import PrinterDiagnostics
 
-VERSION = "2.0.12"
+_diagnostics = PrinterDiagnostics()
+
+VERSION = "2.0.13"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:
@@ -111,6 +114,7 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 def setup_bot_commands():
     cmds = [
         telebot.types.BotCommand("status", "Current status + camera snapshot"),
+        telebot.types.BotCommand("printerinfo", "Printer firmware and AMS diagnostics"),
         telebot.types.BotCommand("ams", "AMS slot status"),
         telebot.types.BotCommand("history", "Last 10 completed prints"),
         telebot.types.BotCommand("cam", "Live camera snapshot"),
@@ -1002,6 +1006,9 @@ def on_message(client, userdata, msg):
     except Exception:
         return
 
+    _diagnostics.ingest(payload)
+    if not isinstance(payload, dict):
+        return
     print_data = payload.get("print", {})
     if not print_data:
         return
@@ -1430,6 +1437,20 @@ def cmd_light(message):
         bot.reply_to(message, t("light_error", error=err))
     else:
         bot.reply_to(message, t("light_on") if new_state == "on" else t("light_off"))
+
+
+@bot.message_handler(commands=["printerinfo"])
+def cmd_printerinfo(message):
+    if not chat_ok(message):
+        return
+    _diagnostics.ready.clear()
+    if not _mqtt_publish({"info": {"sequence_id": "0", "command": "get_version"}}):
+        bot.reply_to(message, "Printer is not connected. Try /printerinfo after it reconnects.")
+        return
+    request_pushall()
+    bot.reply_to(message, "Reading printer firmware and AMS status…")
+    fresh = _diagnostics.ready.wait(8)
+    bot.reply_to(message, _diagnostics.report(fresh), parse_mode=None)
 
 
 @bot.message_handler(commands=["pause"])

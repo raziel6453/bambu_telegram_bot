@@ -299,3 +299,13 @@ uploads. This does not delete the last published snapshot or revoke public acces
 change the website's access settings separately when you want to stop sharing.
 If Spoolman or the sharing service is unavailable, the bot retries after five minutes
 and the website retains its last successful snapshot with a last-synced time.
+
+
+## Printer diagnostics (v2.0.13)
+
+Send `/printerinfo` in the authorized Telegram chat to request printer and AMS firmware
+versions plus selected status fields. It only sends `info/get_version` and `pushing/pushall`;
+it does not load filament, pause, resume, or change printer settings. A timeout is shown
+explicitly and any retained readings are labeled cached. Serial numbers, IP addresses,
+access codes and unrelated MQTT fields are excluded. These diagnostics do not establish
+support for choosing another AMS slot after a runout.

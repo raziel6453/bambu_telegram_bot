@@ -13,6 +13,7 @@ class FilamentAccountingTest(unittest.TestCase):
     def setUp(self):
         self.mapping = {"0": 41, "1": 42, "2": 43, "3": 44}
         self.env = {
+            "_diagnostics": Mock(),
             "datetime": datetime, "timedelta": timedelta, "JERUSALEM": timezone.utc,
             "json": json, "threading": Mock(), "time": Mock(), "log": Mock(),
             "_lock": threading.Lock(), "_status_event": threading.Event(),
