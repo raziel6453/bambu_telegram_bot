@@ -4,6 +4,9 @@ import unittest
 from unittest.mock import Mock, patch
 import test_ams_notifications
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bambu_telegram_bot'))
+
 spec = importlib.util.spec_from_file_location('pause_reason', Path(__file__).resolve().parents[1] / 'bambu_telegram_bot/pause_reason.py')
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -49,3 +52,10 @@ class PauseReasonTest(unittest.TestCase):
         count = env['tg_send'].call_count
         report({'print_error':302022673})
         self.assertEqual(count, env['tg_send'].call_count)
+
+    def test_known_reasons_in_both_languages(self):
+        reason = module.PauseReason()
+        for code, english, hebrew in [(0x12008010, 'stuck', 'תקועים'), (0x12008002, 'cutter', 'סכין'), (0x03008008, 'temperature', 'טמפרטורת'), (0x03008001, 'programmed', 'שתוכנתה'), (0x03008013, 'user', 'המשתמש')]:
+            reason.update({'print_error': code}, 'PAUSE', 'PAUSE')
+            self.assertIn(english, reason.describe('en', 1))
+            self.assertIn(hebrew, reason.describe('he', 1))

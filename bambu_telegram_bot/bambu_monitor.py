@@ -15,7 +15,7 @@ _pause_reason = PauseReason()
 
 _diagnostics = PrinterDiagnostics()
 
-VERSION = "2.0.14"
+VERSION = "2.0.15"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:

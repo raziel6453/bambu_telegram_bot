@@ -1,5 +1,6 @@
 """Conservative pause explanations from reported printer error codes."""
 import time
+from error_reasons import REASONS
 
 
 class PauseReason:
@@ -36,6 +37,8 @@ class PauseReason:
             reason = 'הפילמנט ב-AMS נגמר' if he else 'AMS filament ran out'
             if isinstance(tray, int) and 0 <= tray <= 3:
                 reason += f' — סלוט פעיל {tray + 1}' if he else f' — active slot {tray + 1}'
+        elif self.code in REASONS:
+            reason = REASONS[self.code][1 if he else 0]
         else:
             reason = 'שגיאת מדפסת; בדוק את ההודעה במדפסת או ב-Bambu Handy' if he else 'Printer error; check the message on the printer or in Bambu Handy'
         return f'{reason} ({code})'

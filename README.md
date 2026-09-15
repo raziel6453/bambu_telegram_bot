@@ -320,3 +320,14 @@ or Bambu Handy. Missing errors are explicitly marked as unreported, not assumed 
 be a manual pause. A reason received after the pause generates one follow-up per
 changed nonzero error code. Recently reported errors are retained across partial
 MQTT messages; old errors and errors from a resumed print are cleared.
+
+
+## Expanded error explanations (v2.0.15)
+
+Pause messages translate 73 additional verified printer error codes into concise English
+or Hebrew explanations, following the configured bot language. Covered reasons include
+AMS Lite feeding, retraction and cutting failures; stuck filament; nozzle and bed
+temperature faults; and user-requested or file-programmed pauses. The original code
+remains visible for support. Unrecognized codes retain the explicit unknown-error
+fallback. Descriptions are based on Bambu Studio's official
+[error catalog](https://github.com/bambulab/BambuStudio/tree/master/resources/hms).
