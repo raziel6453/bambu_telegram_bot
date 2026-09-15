@@ -1,4 +1,4 @@
-# 🖨️ Bambu Lab Telegram Monitor
+# 🖨️ BambuBuddy
 
 A Telegram bot that monitors your **Bambu Lab 3D printer** (A1 / P1 / X1 series) in real-time and sends smart notifications — including live **camera snapshots**, remote print control, **Spoolman** filament inventory integration, and a full print history log.
 
@@ -29,7 +29,7 @@ A Telegram bot that monitors your **Bambu Lab 3D printer** (A1 / P1 / X1 series)
 1. Go to **Settings → Add-ons → Add-on Store**.
 2. Click the ⋮ menu (top right) → **Repositories**.
 3. Add: `https://github.com/raziel6453/bambu_telegram_bot`
-4. Find **Bambu Telegram Monitor** and click **Install**.
+4. Find **BambuBuddy** and click **Install**.
 5. Go to the **Configuration** tab, fill in your details, and click **Start**.
 
 > **Tip:** After any update from GitHub, use **Add-on Store → ⋮ → Check for updates**, then update the add-on to pull the latest code.
@@ -331,3 +331,11 @@ temperature faults; and user-requested or file-programmed pauses. The original c
 remains visible for support. Unrecognized codes retain the explicit unknown-error
 fallback. Descriptions are based on Bambu Studio's official
 [error catalog](https://github.com/bambulab/BambuStudio/tree/master/resources/hms).
+
+
+## BambuBuddy rename (v2.0.16)
+
+The add-on display name, command help and startup messages now use BambuBuddy.
+Update the existing add-on normally; do not uninstall it. Its slug, configuration
+keys, data paths, Telegram credentials and GitHub repository URL are unchanged.
+The Telegram profile display name is managed separately through BotFather.

@@ -1,3 +1,3 @@
 #!/bin/bash
-echo "Starting Bambu Telegram Monitor..."
+echo "Starting BambuBuddy..."
 exec python3 /app/bambu_monitor.py

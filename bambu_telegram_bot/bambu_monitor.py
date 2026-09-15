@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bambu Lab Telegram Monitor — Home Assistant Add-on
+BambuBuddy — Home Assistant Add-on
 Clean rewrite. Supports A1/P1/X1 via local or cloud MQTT.
 """
 
@@ -15,7 +15,7 @@ _pause_reason = PauseReason()
 
 _diagnostics = PrinterDiagnostics()
 
-VERSION = "2.0.15"
+VERSION = "2.0.16"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:
@@ -105,7 +105,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("bambu")
 
-log.info(f"=== Bambu Monitor {VERSION} ===")
+log.info(f"=== BambuBuddy {VERSION} ===")
 log.info(f"Printer IP: {PRINTER_IP} | Serial: {PRINTER_SERIAL}")
 log.info(f"Spoolman: {SPOOLMAN_URL or 'not configured'}")
 log.info(f"HA API: {'enabled' if HA_AVAILABLE else 'disabled'}")
@@ -214,7 +214,7 @@ STRINGS = {
         "ctrl_cancel_no":    "✅ ביטול בוטל — ההדפסה ממשיכת.",
         "ctrl_not_printing": "❌ אין הדפסה פעילה כעת.",
         "help": (
-            "🖨️ <b>Bambu Telegram Monitor — פקודות:</b>\n\n"
+            "🖨️ <b>BambuBuddy — פקודות:</b>\n\n"
             "📊 <b>סטטוס</b>\n"
             "/status — סטטוס נוכחי + תמונה\n"
             "/ams — מצב מגשי AMS\n"
@@ -307,7 +307,7 @@ STRINGS = {
         "ctrl_cancel_no":    "✅ Cancel aborted — print continues.",
         "ctrl_not_printing": "❌ No print is currently active.",
         "help": (
-            "🖨️ <b>Bambu Telegram Monitor — Commands:</b>\n\n"
+            "🖨️ <b>BambuBuddy — Commands:</b>\n\n"
             "📊 <b>Status</b>\n"
             "/status — Current status + camera snapshot\n"
             "/ams — AMS slot status\n"
