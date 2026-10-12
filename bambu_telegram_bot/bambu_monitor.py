@@ -7,6 +7,7 @@ Clean rewrite. Supports A1/P1/X1 via local or cloud MQTT.
 import os, sys, json, html, ssl, threading, logging, requests, yaml, time
 from datetime import datetime, timedelta, timezone
 from spool_wizard import SpoolWizard
+from spool_display import slot_keyboard, spool_description, split_messages
 from inventory_share import start_inventory_share
 from printer_diagnostics import PrinterDiagnostics
 from pause_reason import PauseReason
@@ -15,7 +16,7 @@ _pause_reason = PauseReason()
 
 _diagnostics = PrinterDiagnostics()
 
-VERSION = "2.0.16"
+VERSION = "2.0.18"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:
@@ -173,11 +174,14 @@ STRINGS = {
         "ams_slot_native":   "סלוט {slot}: {emoji} {ftype} ({brand}) {color_name} — {grams}g\n",
         "ams_slot_empty":    "סלוט {slot}: ❌ ריק\n",
         "ams_no_data":       "❌ אין נתוני AMS עדיין.\nשלח /debug לבדוק חיבור MQTT.",
-        "ask_spool_id":      "👇 בחר ספול מ-Spoolman כדי לשייך לסלוט {slot}:",
-        "ask_slot_to_map":   "👇 באיזה סלוט תרצה לשייך ספול?",
+        "ask_spool_id":      "👇 שיוך לסלוט AMS {slot}: בחר כפתור או שלח את מספר הספול (למשל 10).\nאפשר לפתוח /spools להצגת המלאי, או /cancel לביטול השיוך.",
+        "ask_slot_to_map":   "👇 בחר את מספר הסלוט כפי שמסומן ב־AMS (1–4):",
+        "map_invalid_spool": "❌ הספול לא נמצא, ריק או בארכיון. שלח מספר של ספול פעיל מתוך /spools.",
+        "map_unreachable":   "❌ לא ניתן לאמת את הספול מול Spoolman. לא נשמר שיוך; נסה שוב.",
+        "map_expired":       "⌛ בקשת השיוך פגה. התחל מחדש עם /map.",
+        "map_cancelled":     "השיוך בוטל.",
         "invalid_number":    "❌ שגיאה: נא להקליד מספר חוקי.",
-        "spools_title":      "📦 *מלאי Spoolman:*\n",
-        "spools_item":       "#{id} | {emoji} {brand} {material} | {grams}g\n",
+        "spools_title":      "📦 מלאי Spoolman:\n",
         "spools_empty":      "המלאי ריק.",
         "spoolman_mapped":   "✅ Spoolman ID {sid} שויך לסלוט {slot}.",
         "spoolman_usage":    "❌ שימוש: /map [סלוט 1-4] [spoolman_id]",
@@ -266,11 +270,14 @@ STRINGS = {
         "ams_slot_native":   "Slot {slot}: {emoji} {ftype} ({brand}) {color_name} — {grams}g\n",
         "ams_slot_empty":    "Slot {slot}: ❌ Empty\n",
         "ams_no_data":       "❌ No AMS data yet.\nSend /debug to check MQTT connection.",
-        "ask_spool_id":      "👇 Choose a Spoolman spool to map to Slot {slot}:",
-        "ask_slot_to_map":   "👇 Which slot do you want to map?",
+        "ask_spool_id":      "👇 Map AMS slot {slot}: choose a button or send the spool ID (e.g. 10).\nUse /spools to see the inventory, or /cancel to cancel mapping.",
+        "ask_slot_to_map":   "👇 Choose the slot number marked on your AMS (1–4):",
+        "map_invalid_spool": "❌ Spool not found, empty or archived. Send an active spool ID from /spools.",
+        "map_unreachable":   "❌ Could not verify the spool with Spoolman. Mapping was not saved; try again.",
+        "map_expired":       "⌛ Mapping request expired. Start again with /map.",
+        "map_cancelled":     "Mapping cancelled.",
         "invalid_number":    "❌ Error: Please type a valid number.",
-        "spools_title":      "📦 *Spoolman Inventory:*\n",
-        "spools_item":       "#{id} | {emoji} {brand} {material} | {grams}g remaining\n",
+        "spools_title":      "📦 Spoolman Inventory:\n",
         "spools_empty":      "Inventory is empty.",
         "spoolman_mapped":   "✅ Spoolman ID {sid} mapped to Slot {slot}.",
         "spoolman_usage":    "❌ Usage: /map [slot 1-4] [spoolman_id]",
@@ -1157,6 +1164,87 @@ def on_message(client, userdata, msg):
 
 # ── Bot Commands ──────────────────────────────────────────────────────────────
 
+_pending_maps = {}
+_mapping_lock = threading.RLock()
+
+
+def _mapping_key(message, user_id=None):
+    return (str(message.chat.id), message.from_user.id if user_id is None else user_id)
+
+
+def _clear_mapping(message, user_id=None):
+    with _mapping_lock:
+        pending = _pending_maps.pop(_mapping_key(message, user_id), None)
+    if pending:
+        try:
+            bot.edit_message_reply_markup(message.chat.id, pending["prompt_id"], reply_markup=None)
+        except Exception:
+            pass
+
+
+def _save_spool_mapping(slot, spool_id):
+    if not 1 <= slot <= 4 or spool_id <= 0:
+        return t("spoolman_usage")
+    spools = _spoolman_get("/api/v1/spool")
+    if spools is None:
+        return t("map_unreachable")
+    spool = next((s for s in spools if s.get("id") == spool_id), None)
+    if not spool or spool.get("archived") or (spool.get("remaining_weight") or 0) <= 0:
+        return t("map_invalid_spool")
+    with _mapping_lock:
+        mapping = load_mapping()
+        mapping[str(slot - 1)] = spool_id
+        save_mapping(mapping)
+    return None
+
+
+def _mapping_accepts_text(message):
+    if not chat_ok(message):
+        return False
+    with _mapping_lock:
+        if _mapping_key(message) not in _pending_maps:
+            return False
+        text = (message.text or "").strip()
+        command = text.split()[0].split("@")[0].lower() if text else ""
+        if command.startswith("/") and command != "/cancel":
+            # Listing inventory is useful mid-mapping. Other commands leave the
+            # flow and still reach their normal handlers (including /addspool).
+            if command not in ("/spools", "/inventory"):
+                _clear_mapping(message)
+            return False
+        return True
+
+
+@bot.message_handler(func=_mapping_accepts_text, content_types=["text"])
+def process_mapping_reply(message):
+    if not chat_ok(message):
+        return
+    with _mapping_lock:
+        pending = _pending_maps.get(_mapping_key(message))
+        if not pending:
+            return
+        text = (message.text or "").strip()
+        if text.split("@")[0].lower() == "/cancel":
+            _clear_mapping(message)
+            bot.reply_to(message, t("map_cancelled"))
+            return
+        if time.monotonic() - pending["updated"] > 900:
+            _clear_mapping(message)
+            bot.reply_to(message, t("map_expired"))
+            return
+        value = text.removeprefix("#").strip()
+        if not value.isascii() or not value.isdecimal() or len(value) > 10 or int(value) <= 0:
+            bot.reply_to(message, t("invalid_number"))
+            return
+        spool_id = int(value)
+        error = _save_spool_mapping(pending["slot"], spool_id)
+        if error:
+            bot.reply_to(message, error)
+            return
+        _clear_mapping(message)
+        bot.reply_to(message, t("spoolman_mapped", sid=spool_id, slot=pending["slot"]))
+
+
 _spool_wizard = SpoolWizard(bot, telebot.types, TELEGRAM_CHAT_ID, LANGUAGE,
                             bool(SPOOLMAN_URL), _spoolman_post)
 _spool_wizard.register()
@@ -1259,11 +1347,7 @@ def cmd_ams(message):
         mapping = load_mapping()
         res = t("ams_title")
 
-        markup = None
-        if SPOOLMAN_URL:
-            markup = telebot.types.InlineKeyboardMarkup()
-            markup.row_width = 4
-            btns = []
+        markup = slot_keyboard(telebot.types) if SPOOLMAN_URL else None
 
         for i in range(4):
             sid = str(i)
@@ -1304,75 +1388,104 @@ def cmd_ams(message):
             else:
                 res += t("ams_slot_empty", slot=slot_num)
                 
-            if SPOOLMAN_URL:
-                btns.append(telebot.types.InlineKeyboardButton(f"Map {slot_num}", callback_data=f"map_{slot_num}"))
-
-        if SPOOLMAN_URL:
-            markup.add(*btns)
-
     bot.reply_to(message, res, parse_mode="HTML", reply_markup=markup)
+
+def _show_mapping_choices(message, slot, user_id, page=0, edit=False):
+    if not SPOOLMAN_URL:
+        bot.send_message(message.chat.id, t("spoolman_no_url"))
+        return
+    spools = _spoolman_get("/api/v1/spool")
+    if spools is None:
+        bot.send_message(message.chat.id, t("map_unreachable"))
+        return
+    available = sorted((s for s in spools if not s.get("archived")
+                        and (s.get("remaining_weight") or 0) > 0), key=lambda s: s["id"])
+    if not available:
+        bot.send_message(message.chat.id, t("spools_empty"))
+        return
+    page_size = 6
+    pages = (len(available) + page_size - 1) // page_size
+    page = max(0, min(page, pages - 1))
+    markup = telebot.types.InlineKeyboardMarkup(row_width=1)
+    descriptions = [t("ask_spool_id", slot=slot), f"{page + 1}/{pages}"]
+    for spool in available[page * page_size:(page + 1) * page_size]:
+        fil = spool.get("filament") or {}
+        sid = spool["id"]
+        emoji = color_to_emoji(fil.get("color_hex") or "")
+        descriptions.append(spool_description(spool, emoji))
+        markup.add(telebot.types.InlineKeyboardButton(
+            f"#{sid} · {emoji} {spool['remaining_weight']:g} g", callback_data=f"setslot_{slot}_{sid}"))
+    navigation = []
+    if page > 0:
+        navigation.append(telebot.types.InlineKeyboardButton(
+            "◀", callback_data=f"map_{slot}_{page - 1}"))
+    if page + 1 < pages:
+        navigation.append(telebot.types.InlineKeyboardButton(
+            "▶", callback_data=f"map_{slot}_{page + 1}"))
+    if navigation:
+        markup.row(*navigation)
+    texts = list(split_messages("\n\n".join(descriptions)))
+    with _mapping_lock:
+        key = _mapping_key(message, user_id)
+        previous = _pending_maps.get(key)
+        if previous and (not edit or previous["prompt_id"] != message.message_id):
+            _clear_mapping(message, user_id)
+        # An abandoned spool-creation draft must not consume the numeric reply.
+        with _spool_wizard.lock:
+            _spool_wizard.sessions.pop(key, None)
+        # Legacy weight prompts use chat-wide next-step handlers, which take
+        # precedence over message handlers. A new mapping replaces that prompt.
+        bot.clear_step_handler_by_chat_id(message.chat.id)
+        for text in texts[:-1]:
+            bot.send_message(message.chat.id, text, parse_mode=None)
+        if edit:
+            bot.edit_message_text(texts[-1], message.chat.id, message.message_id,
+                                  parse_mode=None, reply_markup=markup)
+            prompt_id = message.message_id
+        else:
+            prompt = bot.send_message(message.chat.id, texts[-1], parse_mode=None, reply_markup=markup)
+            prompt_id = prompt.message_id
+        _pending_maps[key] = {"slot": slot, "updated": time.monotonic(), "prompt_id": prompt_id}
+
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("map_"))
 def cb_map(call):
     if not chat_ok(call.message):
         return
-    slot = call.data.split("_")[1]
-    
-    if not SPOOLMAN_URL:
-        bot.answer_callback_query(call.id, "Spoolman not configured.")
-        return
-        
-    spools = _spoolman_get("/api/v1/spool")
-    if not spools:
-        bot.answer_callback_query(call.id, "No spools found in Spoolman.")
-        return
-
-    markup = telebot.types.InlineKeyboardMarkup(row_width=1)
-    btns = []
-    
-    # Take up to 80 spools to avoid telegram limits
-    for s in spools[:80]:
-        rem_w = s.get("remaining_weight")
-        rem = round(rem_w) if rem_w is not None else 0
-        if rem <= 0:
-            continue
-        fil = s.get("filament", {})
-        color_hex = fil.get("color_hex", "")
-        emoji = color_to_emoji(color_hex)
-        brand = (fil.get("vendor") or {}).get("name", "Unknown")
-        mat = fil.get("material", "Unknown")
-        name = fil.get("name", "")
-        
-        # Max button text length
-        label = f"#{s.get('id')} {emoji} {brand} {mat} {name} ({rem}g)"
-        if len(label) > 60:
-            label = label[:57] + "..."
-            
-        btns.append(telebot.types.InlineKeyboardButton(label, callback_data=f"setslot_{slot}_{s.get('id')}"))
-
-    markup.add(*btns)
-    msg = bot.send_message(call.message.chat.id, t("ask_spool_id", slot=slot), parse_mode="HTML", reply_markup=markup)
     bot.answer_callback_query(call.id)
+    try:
+        parts = call.data.split("_")
+        slot = int(parts[1])
+        page = int(parts[2]) if len(parts) == 3 else 0
+        if not 1 <= slot <= 4 or len(parts) not in (2, 3):
+            raise ValueError()
+    except (ValueError, IndexError):
+        bot.send_message(call.message.chat.id, t("spoolman_usage"))
+        return
+    _show_mapping_choices(call.message, slot, call.from_user.id, page, edit=len(parts) == 3)
+
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("setslot_"))
 def cb_setslot(call):
     if not chat_ok(call.message):
         return
-    parts = call.data.split("_")
-    slot = parts[1]
-    spool_id = int(parts[2])
-    
-    mapping = load_mapping()
-    mapping[str(int(slot)-1)] = spool_id
-    save_mapping(mapping)
-    
+    bot.answer_callback_query(call.id)
+    try:
+        _, slot, spool_id = call.data.split("_")
+        slot, spool_id = int(slot), int(spool_id)
+    except ValueError:
+        bot.send_message(call.message.chat.id, t("spoolman_usage"))
+        return
+    error = _save_spool_mapping(slot, spool_id)
+    if error:
+        bot.send_message(call.message.chat.id, error)
+        return
+    _clear_mapping(call.message, call.from_user.id)
     try:
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-    except:
+    except Exception:
         pass
-        
-    bot.send_message(call.message.chat.id, t("spoolman_mapped", sid=spool_id, slot=slot), parse_mode="HTML")
-    bot.answer_callback_query(call.id)
+    bot.send_message(call.message.chat.id, t("spoolman_mapped", sid=spool_id, slot=slot))
 
 
 @bot.message_handler(commands=["history"])
@@ -1521,59 +1634,40 @@ def cmd_spools(message):
     if spools is None:
         bot.reply_to(message, "❌ Cannot reach Spoolman.")
         return
-    if not spools:
-        bot.reply_to(message, t("spools_title") + t("spools_empty"))
-        return
-    res = t("spools_title")
-    for s in spools:
-        rem_w = s.get("remaining_weight")
-        rem = round(rem_w) if rem_w is not None else 0
-        if rem <= 0:
+    descriptions = []
+    for spool in sorted(spools, key=lambda s: s["id"]):
+        if spool.get("archived") or (spool.get("remaining_weight") or 0) <= 0:
             continue
-        fil   = s.get("filament", {})
-        emoji = color_to_emoji(fil.get("color_hex", ""))
-        brand = (fil.get("vendor") or {}).get("name", "Unknown")
-        mat   = fil.get("material", "Unknown")
-        res  += t("spools_item", id=s.get("id"), emoji=emoji, brand=brand, material=mat, grams=rem)
-    if len(res) > 4000:
-        res = res[:4000] + "\n…"
-    bot.reply_to(message, res)
+        fil = spool.get("filament") or {}
+        descriptions.append(spool_description(spool, color_to_emoji(fil.get("color_hex") or "")))
+    text = t("spools_title") + "\n\n".join(descriptions or [t("spools_empty")])
+    for chunk in split_messages(text):
+        bot.reply_to(message, chunk, parse_mode=None)
 
 
 @bot.message_handler(commands=["map"])
 def cmd_map(message):
-    """/map [slot 1-4] [spoolman_id]"""
+    """/map, /map <slot>, or /map <slot> <spool_id>."""
     if not chat_ok(message):
         return
     if not SPOOLMAN_URL:
         bot.reply_to(message, t("spoolman_no_url"))
         return
+    _clear_mapping(message)
     parts = message.text.strip().split()
-    
-    # Interactive mode
     if len(parts) == 1:
-        markup = telebot.types.InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            telebot.types.InlineKeyboardButton("Slot 1", callback_data="map_1"),
-            telebot.types.InlineKeyboardButton("Slot 2", callback_data="map_2"),
-            telebot.types.InlineKeyboardButton("Slot 3", callback_data="map_3"),
-            telebot.types.InlineKeyboardButton("Slot 4", callback_data="map_4"),
-        )
-        bot.reply_to(message, t("ask_slot_to_map"), reply_markup=markup)
-        return
-
-    if len(parts) < 3:
-        bot.reply_to(message, t("spoolman_usage"))
+        bot.reply_to(message, t("ask_slot_to_map"), reply_markup=slot_keyboard(telebot.types))
         return
     try:
         slot = int(parts[1])
-        sid  = int(parts[2])
-        if not 1 <= slot <= 4:
-            raise ValueError("Slot out of range")
-        mapping = load_mapping()
-        mapping[str(slot - 1)] = sid
-        save_mapping(mapping)
-        bot.reply_to(message, t("spoolman_mapped", sid=sid, slot=slot))
+        if not 1 <= slot <= 4 or len(parts) not in (2, 3):
+            raise ValueError()
+        if len(parts) == 2:
+            _show_mapping_choices(message, slot, message.from_user.id)
+            return
+        sid = int(parts[2])
+        error = _save_spool_mapping(slot, sid)
+        bot.reply_to(message, error or t("spoolman_mapped", sid=sid, slot=slot))
     except (ValueError, IndexError):
         bot.reply_to(message, t("spoolman_usage"))
 
@@ -1674,6 +1768,7 @@ def cmd_update(message):
 def cb_create_spool(call):
     if not chat_ok(call.message):
         return
+    _clear_mapping(call.message, call.from_user.id)
     slot = call.data.split("_")[2]
     
     ams_info = _ams_state.get(str(slot), {})
@@ -1737,6 +1832,7 @@ def process_spool_create_weight(message, slot, brand, material, color):
 def cb_update(call):
     if not chat_ok(call.message):
         return
+    _clear_mapping(call.message, call.from_user.id)
     spool_id = int(call.data.split("_")[1])
     
     try:

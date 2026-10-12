@@ -123,7 +123,7 @@ updates through the configuration version.
 |---------|-------------|
 | `/spools` | List all spools in your Spoolman inventory |
 | `/addspool` | Guided creation: choose material, color and weight, then save to inventory |
-| `/map [slot] [spool_id]` | Interactive mode: Run without arguments to pick slot and spool via buttons, or provide arguments for quick mapping |
+| `/map [slot] [spool_id]` | Pick slot 1–4, then choose a spool button or reply with its ID. `/map 2` opens slot 2; `/map 2 42` maps directly |
 | `/set <slot> <brand> <material>` | Create a new spool in Spoolman and map the slot automatically |
 | `/update` | Interactive mode: Select a spool and manually update its remaining weight via chat |
 
@@ -163,7 +163,8 @@ If you run [Spoolman](https://github.com/Donkie/Spoolman) for filament tracking:
 2. Map AMS slots to spools:
 
 ```
-/map              # Interactive mode: select slot and spool via chat buttons
+/map              # Choose slot 1–4, then press a spool button or send its ID
+/map 2            # Choose a spool for slot 2 (buttons or a numeric reply)
 /map 1 42         # Quick mode: Links AMS slot 1 → spool ID 42
 /set 2 Bambu PLA  # Creates a NEW spool and links slot 2
 /update           # Interactive mode: manually update a spool's remaining weight
@@ -339,3 +340,18 @@ The add-on display name, command help and startup messages now use BambuBuddy.
 Update the existing add-on normally; do not uninstall it. Its slug, configuration
 keys, data paths, Telegram credentials and GitHub repository URL are unchanged.
 The Telegram profile display name is managed separately through BotFather.
+
+## Clear inventory names and easier mapping (v2.0.18)
+
+AMS slot buttons now match the AMS Lite layout: **1, 3** in the top row and
+**2, 4** in the bottom row. After selecting a slot, send a spool ID such as `42`
+or `#42`, or choose its button. `/spools` remains available during selection;
+`/cancel` cancels the mapping request, not the print. Other commands exit the
+mapping flow. Numeric replies belong to the user who selected the slot and
+expire after 15 minutes. Only an existing active spool with filament remaining
+can be mapped.
+
+Both the spool picker and `/spools` display the full filament name, brand,
+material, spool ID and remaining grams. The picker has navigation buttons;
+long inventory lists continue in additional messages without truncation.
+This updates the bot's Spoolman mapping only, not printer material settings.

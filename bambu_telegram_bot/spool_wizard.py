@@ -181,8 +181,8 @@ class SpoolWizard:
             return
         keyboard = self.types.InlineKeyboardMarkup(row_width=2)
         keyboard.add(*(self.types.InlineKeyboardButton(
-            self.tr(f"Map to slot {slot}", f"שיוך לסלוט {slot}"), callback_data=f"setslot_{slot}_{spool['id']}")
-            for slot in range(1, 5)))
+            str(slot), callback_data=f"setslot_{slot}_{spool['id']}")
+            for slot in (1, 3, 2, 4)))
         self.bot.send_message(chat, self.tr(
             f"✅ Spool #{spool['id']} added to inventory.\n{state['material']} · {state['color_name']} · {state['weight']:g} g\nOptional: map it to an AMS slot below. Otherwise, you're done.",
             f"✅ ספול #{spool['id']} נוסף למלאי.\n{state['material']} · {state['color_name']} · {state['weight']:g} גרם\nאפשר לשייך לסלוט AMS בכפתורים. ללא שיוך, ההוספה הסתיימה."), reply_markup=keyboard)

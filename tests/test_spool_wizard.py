@@ -13,6 +13,7 @@ spec.loader.exec_module(module)
 class Keyboard:
     def __init__(self, **kwargs):
         self.buttons = []
+        self.row_width = kwargs.get("row_width", 3)
 
     def add(self, *buttons):
         self.buttons.extend(buttons)
@@ -58,7 +59,9 @@ class SpoolWizardTest(unittest.TestCase):
             "filament_id": 17, "initial_weight": 1000.0, "used_weight": 0,
         }))
         buttons = self.bot.send_message.call_args.kwargs["reply_markup"].buttons
-        self.assertEqual([b.callback_data for b in buttons], [f"setslot_{i}_42" for i in range(1, 5)])
+        self.assertEqual([b.callback_data for b in buttons], [f"setslot_{i}_42" for i in (1, 3, 2, 4)])
+        self.assertEqual([b.text for b in buttons], ["1", "3", "2", "4"])
+        self.assertEqual(self.bot.send_message.call_args.kwargs["reply_markup"].row_width, 2)
         self.assertEqual(self.wizard.sessions, {})
         self.click(save)
         self.assertEqual(self.post.call_count, 2)
