@@ -11,12 +11,14 @@ from spool_display import slot_keyboard, spool_description, split_messages
 from inventory_share import start_inventory_share
 from printer_diagnostics import PrinterDiagnostics
 from pause_reason import PauseReason
+from octoeverywhere_notifications import start_notifications, notification_text
 
 _pause_reason = PauseReason()
 
 _diagnostics = PrinterDiagnostics()
+_octo_notifications = None
 
-VERSION = "2.0.18"
+VERSION = "2.0.19"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:
@@ -122,6 +124,7 @@ def setup_bot_commands():
         telebot.types.BotCommand("ams", "AMS slot status"),
         telebot.types.BotCommand("history", "Last 10 completed prints"),
         telebot.types.BotCommand("cam", "Live camera snapshot"),
+        telebot.types.BotCommand("octo", "Set up OctoEverywhere alerts"),
         telebot.types.BotCommand("pause", "Pause current print"),
         telebot.types.BotCommand("resume", "Resume paused print"),
         telebot.types.BotCommand("cancel", "Cancel print (asks confirmation)"),
@@ -207,6 +210,11 @@ STRINGS = {
         "cam_no_entity":     "❌ לא נמצאה מצלמת Bambu ב-HA.",
         "cam_error":         "❌ שגיאה במשיכת תמונה: {error}",
         "ha_no_api":         "❌ הבוט לא רץ עם HA API.",
+        "octo_disabled":     "להפעלת התראות OctoEverywhere: הפעל octoeverywhere_notifications בהגדרות BambuBuddy, שמור והפעל מחדש. לאחר מכן שלח /octo.",
+        "octo_failed":       "❌ מקלט התראות OctoEverywhere לא התחיל. בדוק את לוג BambuBuddy.",
+        "octo_private":      "פרטי חיבור OctoEverywhere מוצגים רק בצ׳אט הפרטי המורשה של הבוט.",
+        "octo_setup":        "חיבור התראות OctoEverywhere ל־BambuBuddy:\n1. פתח https://octoeverywhere.com/notifications?handler=webhook\n2. בחר את המדפסת הזו ומצב LAN.\n3. הדבק את הכתובת ואת Secret Key המופיעים בהודעות הבאות.\n4. שמור ולחץ Test Notification.\n\nהכתובת מיועדת לתוספים באותו Home Assistant. התראות פעילות: חשד לכשל, צורך בהתערבות והתקררות המשטח. שמור את המפתח פרטי.",
+        "octo_view":         "🔎 פתיחת המדפסת",
         "light_on":          "💡 המנורה דולקת",
         "light_off":         "🌑 המנורה כבויה",
         "light_no_entity":   "❌ לא נמצא רכיב תאורה של Bambu.",
@@ -225,6 +233,7 @@ STRINGS = {
             "/history — 10 הדפסות אחרונות\n\n"
             "🎥 <b>מצלמה</b>\n"
             "/cam — צילום חי\n\n"
+            "/octo — חיבור התראות OctoEverywhere\n\n"
             "⚡ <b>שליטה מרחוק</b>\n"
             "/pause — עצירת הדפסה\n"
             "/resume — המשך הדפסה\n"
@@ -303,6 +312,11 @@ STRINGS = {
         "cam_no_entity":     "❌ No Bambu camera found in Home Assistant.",
         "cam_error":         "❌ Error fetching snapshot: {error}",
         "ha_no_api":         "❌ Bot is not running with HA API access.",
+        "octo_disabled":     "To enable OctoEverywhere alerts: enable octoeverywhere_notifications in BambuBuddy settings, save and restart. Then send /octo.",
+        "octo_failed":       "❌ The OctoEverywhere notification receiver did not start. Check the BambuBuddy log.",
+        "octo_private":      "OctoEverywhere connection details are shown only in the bot's authorized private chat.",
+        "octo_setup":        "Connect OctoEverywhere notifications to BambuBuddy:\n1. Open https://octoeverywhere.com/notifications?handler=webhook\n2. Select this printer and LAN mode.\n3. Paste the URL and Secret Key from the next messages.\n4. Save and click Test Notification.\n\nThe URL is for add-ons on the same Home Assistant. Enabled alerts: possible failure, user intervention and bed cooled. Keep the key private.",
+        "octo_view":         "🔎 Open printer",
         "light_on":          "💡 Light is ON",
         "light_off":         "🌑 Light is OFF",
         "light_no_entity":   "❌ No Bambu light entity found in Home Assistant.",
@@ -321,6 +335,7 @@ STRINGS = {
             "/history — Last 10 completed prints\n\n"
             "🎥 <b>Camera</b>\n"
             "/cam — Live snapshot (requires HA)\n\n"
+            "/octo — Set up OctoEverywhere alerts\n\n"
             "⚡ <b>Remote Control</b>\n"
             "/pause — Pause current print\n"
             "/resume — Resume paused print\n"
@@ -678,6 +693,37 @@ def tg_photo(text: str):
                 return
         except Exception as e:
             log.warning(f"Photo send failed, falling back to text: {e}")
+    tg_send(text)
+
+
+def _send_octo_notification(event):
+    """Called by the durable notification worker; let it retry delivery failures."""
+    if "text" in event:
+        bot.send_message(TELEGRAM_CHAT_ID, event["text"], parse_mode=None, timeout=15)
+        return
+    text = notification_text(event, LANGUAGE)
+    keyboard = None
+    if event.get("QuickViewUrl"):
+        keyboard = telebot.types.InlineKeyboardMarkup()
+        keyboard.add(telebot.types.InlineKeyboardButton(t("octo_view"), url=event["QuickViewUrl"]))
+    if event.get("SnapshotUrl"):
+        try:
+            # The event's snapshot is independent of /cam and HA availability.
+            bot.send_photo(TELEGRAM_CHAT_ID, event["SnapshotUrl"], caption=text,
+                           reply_markup=keyboard, parse_mode=None, timeout=15)
+            return
+        except Exception as error:
+            log.warning("OctoEverywhere alert photo unavailable (%s); sending text", type(error).__name__)
+    bot.send_message(TELEGRAM_CHAT_ID, text, reply_markup=keyboard, parse_mode=None, timeout=15)
+
+
+def _notify_pause(text):
+    if _octo_notifications:
+        try:
+            if _octo_notifications.enqueue_pause(text, _pause_reason.code, _state.get("filename", "")):
+                return
+        except Exception as error:
+            log.warning("Pause notification queue unavailable (%s)", type(error).__name__)
     tg_send(text)
 
 
@@ -1105,14 +1151,14 @@ def on_message(client, userdata, msg):
             _persist_state()
 
         elif gcode_state == "PAUSE" and was_printing and prev_state == "RUNNING":
-            tg_send(t("print_paused", filename=filename or "–", pct=mc_percent, layer=_state.get("layer_num", 0), total_layers=_state.get("total_layer_num", 0), reason=_pause_reason.describe(LANGUAGE, _state.get("tray_now"))))
+            _notify_pause(t("print_paused", filename=filename or "–", pct=mc_percent, layer=_state.get("layer_num", 0), total_layers=_state.get("total_layer_num", 0), reason=_pause_reason.describe(LANGUAGE, _state.get("tray_now"))))
             _pause_reason.announced = _pause_reason.code
 
         elif gcode_state == "RUNNING" and prev_state == "PAUSE":
             tg_send(t("print_resumed", filename=filename or "–"))
 
         if gcode_state == "PAUSE" and prev_state == "PAUSE" and _pause_reason.code and _pause_reason.announced is not None and _pause_reason.announced != _pause_reason.code:
-            tg_send("⏸️ 🔎 " + _pause_reason.describe(LANGUAGE, _state.get("tray_now")))
+            _notify_pause("⏸️ 🔎 " + _pause_reason.describe(LANGUAGE, _state.get("tray_now")))
             _pause_reason.announced = _pause_reason.code
 
         # ── AMS slot data ──────────────────────────────────────────────────
@@ -1865,6 +1911,34 @@ def process_spool_update_weight(message, spool_id):
         bot.register_next_step_handler(msg, process_spool_update_weight, spool_id)
 
 
+@bot.message_handler(commands=["octo"])
+def cmd_octo(message):
+    if not chat_ok(message):
+        return
+    if getattr(message.chat, "type", "") != "private":
+        bot.reply_to(message, t("octo_private"))
+        return
+    if not options.get("octoeverywhere_notifications", False):
+        bot.reply_to(message, t("octo_disabled"))
+        return
+    if not _octo_notifications:
+        bot.reply_to(message, t("octo_failed"))
+        return
+    hostname = None
+    if HA_AVAILABLE:
+        try:
+            response = requests.get("http://supervisor/addons/self/info", headers=_ha_headers(), timeout=5)
+            if response.status_code == 200:
+                data = response.json().get("data", {})
+                hostname = data.get("hostname") or data.get("slug")
+        except Exception as error:
+            log.warning("Could not read add-on hostname (%s)", type(error).__name__)
+    url, secret = _octo_notifications.setup_values(hostname)
+    bot.reply_to(message, t("octo_setup"), disable_web_page_preview=True)
+    bot.send_message(message.chat.id, "Webhook URL:\n" + url, disable_web_page_preview=True)
+    bot.send_message(message.chat.id, "Secret Key:\n<code>" + html.escape(secret) + "</code>", parse_mode="HTML")
+
+
 @bot.message_handler(commands=["debug"])
 def cmd_debug(message):
     if not chat_ok(message):
@@ -1878,6 +1952,7 @@ def cmd_debug(message):
         "<b>🔍 Debug Info</b>\n\n"
         f"<b>Version:</b> {VERSION}\n"
         f"<b>HA API:</b> {'✅ enabled' if HA_AVAILABLE else '❌ disabled'}\n"
+        f"<b>OctoEverywhere alerts:</b> {'✅ enabled' if _octo_notifications else '❌ inactive'}\n"
         f"<b>Spoolman:</b> {SPOOLMAN_URL or '❌ not configured'}\n\n"
         "<b>State:</b>\n<pre>" + html.escape(state_json) + "</pre>\n\n"
         "<b>Last Raw MQTT:</b>\n<pre>" + html.escape(raw_json) + "</pre>"
@@ -1985,6 +2060,11 @@ def main():
         options.get("inventory_share_token", "").strip(),
     )
 
+    global _octo_notifications
+    _octo_notifications = start_notifications(
+        options.get("octoeverywhere_notifications", False), DATA_DIR, _send_octo_notification,
+    )
+
     # Start Telegram polling in background thread
     threading.Thread(target=bot.infinity_polling, daemon=True, name="tg-polling").start()
     log.info("Telegram polling started")
@@ -2016,6 +2096,8 @@ def main():
         log.info("Stopped by user.")
     finally:
         share_stop.set()
+        if _octo_notifications:
+            _octo_notifications.close()
 
 
 if __name__ == "__main__":

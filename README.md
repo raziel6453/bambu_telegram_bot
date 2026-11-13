@@ -10,6 +10,7 @@ A Telegram bot that monitors your **Bambu Lab 3D printer** (A1 / P1 / X1 series)
 - 💾 **State Persistence** — Survives Add-on restarts. Recovers mid-print state silently without duplicate start alerts.
 - 📸 **Camera snapshots** — included on print start, progress milestones (25/50/75%), and completion.
 - 📬 **Smart notifications** — print start, progress, completion, failure, low-filament, and new spool detection.
+- 🚨 **OctoEverywhere alerts** — optional Gadget failure warnings, intervention requests and bed-cooled notices, with duplicate filtering.
 - 🎛️ **Remote control** — pause, resume, and cancel prints directly from Telegram.
 - 📋 **Print history** — every completed print is logged; view the last 10 with `/history`.
 - 🧵 **Spoolman integration** — auto-deducts usage on completion, alerts when a spool runs low, and creates new spools on demand.
@@ -132,6 +133,7 @@ updates through the configuration version.
 |---------|-------------|
 | `/light` | Toggle printer lamp on/off (requires HA light entity) |
 | `/debug` | Show raw MQTT payload and internal state for troubleshooting |
+| `/octo` | Set up selected OctoEverywhere alerts in your authorized private chat |
 | `/help` | Show all commands |
 
 ---
@@ -212,6 +214,7 @@ To register: /set 1 Bambu PLA
 | `spoolman_url` | | Spoolman base URL |
 | `low_stock_threshold` | | Alert below this many grams (default: `100`) |
 | `ha_camera_entity` | | HA camera entity ID (auto-discovered if blank) |
+| `octoeverywhere_notifications` | | Enable the authenticated local OctoEverywhere notification receiver (default: `false`) |
 | `ha_light_entity` | | HA light entity ID (auto-discovered if blank) |
 | `ha_weight_entity` | | HA weight sensor entity ID (auto-discovered if blank) |
 | `bambu_username` | | Bambu Cloud email (for cloud MQTT fallback) |
@@ -355,3 +358,67 @@ Both the spool picker and `/spools` display the full filament name, brand,
 material, spool ID and remaining grams. The picker has navigation buttons;
 long inventory lists continue in additional messages without truncation.
 This updates the bot's Spoolman mapping only, not printer material settings.
+
+## OctoEverywhere alerts (v2.0.19)
+
+Receive these three additional alerts in the existing BambuBuddy Telegram chat:
+
+- **Possible print failure / spaghetti** reported by Gadget (event 7).
+- **User intervention required**, with the reported error and code when available (event 12).
+- **Print bed cooled down** after printing (event 15).
+
+The notification can include OctoEverywhere's event snapshot and an **Open printer**
+button. If the image cannot be sent, the text still arrives. These snapshots do not
+use HA camera entities or require changing `/cam`. No automatic pause or other
+printer action is enabled by this integration. Events depend on the printer and
+OctoEverywhere plugin reporting them.
+
+### Setup
+
+1. Update BambuBuddy, enable `octoeverywhere_notifications` in its configuration,
+   save and restart the add-on.
+2. Send **`/octo`** in your configured private Telegram chat. The bot sends the
+   webhook URL and a generated **Secret Key** in separate messages for copying.
+3. Open [OctoEverywhere webhook notifications](https://octoeverywhere.com/notifications?handler=webhook),
+   select **this printer**, choose **LAN** delivery, and paste both values.
+4. Save and use **Test Notification**. BambuBuddy should send a confirmation.
+   Test events (16) are supported even though normal print lifecycle events are filtered.
+
+The generated URL uses the add-on's own internal hostname and port `8765`.
+When OctoEverywhere and BambuBuddy run as add-ons on the same Home Assistant,
+leave the host port in the Network section blank. Their internal network is enough.
+If OctoEverywhere runs on another computer, explicitly map `8765/tcp` to a host
+port in the add-on's Network settings and use `http://<HA-LAN-IP>:<host-port>/octoeverywhere`
+instead. Keep LAN delivery selected. For standalone Docker, publish the port only
+on the LAN address and use the Docker host's LAN address in the webhook URL.
+
+The key is generated once and saved in `octoeverywhere_notifications.json` in the
+bot's data directory, with private file permissions. `/octo` only discloses it in
+the authorized **private** chat, never a group. For a bot configured for a group,
+the owner must read the key from this private data file; the group cannot retrieve it.
+The webhook verifies the key on every request. `/debug` displays whether the
+receiver is active, without showing the key. Disabling the setting and restarting
+stops the listener; remove or disable the webhook in OctoEverywhere as well.
+
+### Duplicate filtering and delivery
+
+- Start, progress, finish, failure, pause/resume, filament-change and other
+  unselected webhook events are acknowledged but not forwarded. The existing bot
+  continues to handle its MQTT notifications and Spoolman accounting.
+- Identical Gadget warnings and intervention requests are suppressed for **10 minutes**
+  per printer and print. A different error code or print can notify immediately.
+  Bed-cooled events are sent once per printer/print within a seven-day retention window.
+- If an intervention request and an existing MQTT pause notice have the same known
+  error code and filename within **two minutes**, only the first delivered notice is
+  sent. Intervention webhooks wait three seconds to let the printer's own pause
+  explanation arrive first. Unknown codes and different filenames remain separate.
+- Deduplication records and pending notifications survive restarts. Webhooks are
+  acknowledged after being queued on disk, without waiting for Telegram. Failed
+  deliveries retry with a delay, for up to 15 minutes; older pending alerts expire.
+  As with other Telegram sends, a lost API response can make delivery ambiguous.
+
+This uses OctoEverywhere's existing notification service, rather than submitting
+images to a separate AI analysis API. See the official
+[LAN webhook setup](https://docs.octoeverywhere.com/webhook-notifications/setup/),
+[event list](https://docs.octoeverywhere.com/webhook-notifications/event-types/), and
+[payload format](https://docs.octoeverywhere.com/webhook-notifications/json-payload-format/).

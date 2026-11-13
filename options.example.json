@@ -7,6 +7,7 @@
   "bambu_username": "",
   "bambu_password": "",
   "spoolman_url": "",
+  "octoeverywhere_notifications": false,
   "low_stock_threshold": 100,
   "language": "he"
 }

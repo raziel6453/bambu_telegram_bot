@@ -13,6 +13,7 @@ COPY error_reasons.py /app/error_reasons.py
 COPY pause_reason.py /app/pause_reason.py
 COPY printer_diagnostics.py /app/printer_diagnostics.py
 COPY inventory_share.py /app/inventory_share.py
+COPY octoeverywhere_notifications.py /app/octoeverywhere_notifications.py
 COPY run.sh /app/run.sh
 RUN chmod a+x /app/run.sh
 

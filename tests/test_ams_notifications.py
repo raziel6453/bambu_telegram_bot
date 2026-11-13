@@ -37,6 +37,7 @@ class AmsNotificationsTest(unittest.TestCase):
         self.bot = Mock()
         self.env = {
             "_diagnostics": Mock(), "_pause_reason": Mock(),
+            "_octo_notifications": None,
             "json": json,
             "time": time,
             "_lock": threading.Lock(),
@@ -65,7 +66,7 @@ class AmsNotificationsTest(unittest.TestCase):
             "color_to_emoji": lambda color: "",
         }
         tree = ast.parse(SOURCE.read_text())
-        names = {"tg_send", "on_message", "chat_ok", "cb_map", "cb_setslot"}
+        names = {"tg_send", "_notify_pause", "on_message", "chat_ok", "cb_map", "cb_setslot"}
         names.update({"_mapping_key", "_clear_mapping", "_save_spool_mapping", "_mapping_accepts_text",
                       "process_mapping_reply", "_show_mapping_choices", "cmd_map", "cmd_spools", "cmd_ams"})
         selected = []

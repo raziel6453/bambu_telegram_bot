@@ -12,3 +12,5 @@ data/
 spoolman_mapping.json
 print_history.json
 persist_state.json
+octoeverywhere_notifications.json
+octoeverywhere_notifications.tmp
