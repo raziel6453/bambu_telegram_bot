@@ -18,7 +18,7 @@ _pause_reason = PauseReason()
 _diagnostics = PrinterDiagnostics()
 _octo_notifications = None
 
-VERSION = "2.0.22"
+VERSION = "2.0.23"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:
@@ -1384,6 +1384,16 @@ def cmd_help(message):
     bot.reply_to(message, t("help"), parse_mode="HTML")
 
 
+def _gadget_status_text():
+    if _octo_notifications:
+        return _octo_notifications.gadget_status(LANGUAGE)
+    if options.get("octoeverywhere_notifications", False):
+        return ("🤖 Gadget: מקלט ההתראות אינו זמין. בדוק /octo." if LANGUAGE == "he"
+                else "🤖 Gadget: notification receiver unavailable. Check /octo.")
+    return ("🤖 Gadget: חיבור ההתראות לא הופעל בבוט. להגדרה: /octo." if LANGUAGE == "he"
+            else "🤖 Gadget: alerts are not enabled in the bot. Set up with /octo.")
+
+
 @bot.message_handler(commands=["status"])
 def cmd_status(message):
     if not chat_ok(message):
@@ -1448,14 +1458,22 @@ def cmd_status(message):
             else:
                 res = t("status_idle", light=light_str)
 
+        res += "\n\n" + _gadget_status_text()
+
         # Send with photo if HA camera is available
         if HA_AVAILABLE:
             img, _ = ha_snapshot()
             if img:
-                bot.send_photo(message.chat.id, img, caption=res)
+                if len(res.encode("utf-16-le")) // 2 <= 1024:
+                    bot.send_photo(message.chat.id, img, caption=res)
+                else:
+                    bot.send_photo(message.chat.id, img)
+                    for chunk in split_messages(res):
+                        bot.reply_to(message, chunk)
                 return
 
-        bot.reply_to(message, res)
+        for chunk in split_messages(res):
+            bot.reply_to(message, chunk)
 
     except Exception as e:
         import traceback

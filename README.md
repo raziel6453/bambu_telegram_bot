@@ -103,7 +103,7 @@ updates through the configuration version.
 ### 📊 Status
 | Command | Description |
 |---------|-------------|
-| `/status` | Live printer status + active slot + Spoolman remaining weight + camera snapshot |
+| `/status` | Live printer status + active slot + Spoolman remaining weight + camera snapshot + last Gadget alert |
 | `/ams` | AMS slot details (type, colour, remaining %) |
 | `/history` | Last 10 completed prints (date, file, duration, grams) |
 
@@ -377,6 +377,15 @@ long inventory lists continue in additional messages without truncation.
 This updates the bot's Spoolman mapping only, not printer material settings.
 
 ## OctoEverywhere alerts (v2.0.19)
+
+From v2.0.23, `/status` also shows the **last Gadget alert received by the bot**:
+warning or Gadget-initiated pause, file name and elapsed time since receipt.
+This is historical information, not live monitoring status. With no recorded
+alert, the monitoring state is shown as unknown; silence does not mean a print
+is healthy. No extra token or setup is needed if the webhook is already configured.
+The last alert survives restarts. Only alerts received after this update are
+recorded, and other OctoEverywhere events do not clear it. Smart Pause events
+(event 8) update this history without adding another Telegram pause notification.
 
 Receive these three additional alerts in the existing BambuBuddy Telegram chat:
 

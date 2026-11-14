@@ -1,7 +1,8 @@
 """Authenticated LAN webhooks for selected OctoEverywhere notifications.
 
 Only Gadget warnings (7), user intervention (12), bed cooled (15), and setup
-tests (16) are forwarded. MQTT remains the source of ordinary print events.
+tests (16) are forwarded. Gadget pauses (8) are retained for status only.
+MQTT remains the source of ordinary print events.
 """
 import hashlib
 import hmac
@@ -178,15 +179,15 @@ class NotificationRelay:
         event_type = payload.get("EventType")
         if type(event_type) is not int:
             return 400
-        if event_type not in EVENTS:
-            return 200  # Including ordinary lifecycle and Smart Pause events.
+        if event_type not in EVENTS and event_type != 8:
+            return 200  # Ordinary lifecycle events are still handled by MQTT.
         printer = payload.get("PrinterId")
         print_id = payload.get("PrintId")
         if not isinstance(printer, str) or not printer or len(printer) > 200:
             return 400
         if print_id is not None and (not isinstance(print_id, str) or len(print_id) > 200):
             return 400
-        if event_type in (7, 15) and not print_id:
+        if event_type in (7, 8, 15) and not print_id:
             return 400
         print_id = print_id or ""
         event = {"EventType": event_type, "PrinterId": printer, "PrintId": print_id or "",
@@ -199,10 +200,55 @@ class NotificationRelay:
         code = error_code(payload.get("PlatformErrorCode"))
         if code:
             event["PlatformErrorCode"] = code
+        if event_type in (7, 8):
+            # Retain receipt independently of Telegram delivery/dedup. These are
+            # historical warnings, never evidence that monitoring is healthy.
+            with self.lock:
+                previous = self.state.get("last_gadget")
+                self.state["last_gadget"] = {"event": event_type, "file": event["FileName"],
+                                              "received": self.clock()}
+                try:
+                    self._save()
+                except OSError:
+                    if previous is None:
+                        self.state.pop("last_gadget", None)
+                    else:
+                        self.state["last_gadget"] = previous
+                    return 503
+            if event_type == 8:
+                return 200  # Status only; existing MQTT pause notices remain unchanged.
         details = (code or event["Error"].strip()) if event_type == 12 else ""
         event_key = self._key([printer, print_id, event_type, details])
         pause_key = self._pause_key(code, event["FileName"]) if event_type == 12 else None
         return self._enqueue(event_key, event, pause_key, delay=3 if event_type == 12 else 0)
+
+    def gadget_status(self, language):
+        he = language == "he"
+        with self.lock:
+            record = dict(self.state.get("last_gadget") or {})
+        if not record:
+            return ("🤖 Gadget: עדיין לא התקבלה התראה. מצב הניטור אינו ידוע."
+                    if he else "🤖 Gadget: no alert received yet. Monitoring status is unknown.")
+        elapsed = max(0, int(self.clock() - record["received"]))
+        if elapsed < 60:
+            age = "לפני פחות מדקה" if he else "less than a minute ago"
+        elif elapsed < 3600:
+            age = f"לפני {elapsed // 60} דקות" if he else f"{elapsed // 60} min ago"
+        elif elapsed < 86400:
+            age = f"לפני {elapsed // 3600} שעות" if he else f"{elapsed // 3600} h ago"
+        else:
+            age = f"לפני {elapsed // 86400} ימים" if he else f"{elapsed // 86400} days ago"
+        if record["event"] == 8:
+            warning = "Gadget השהה עקב חשד לכשל" if he else "Gadget paused a print due to failure"
+        else:
+            warning = "חשד לכשל / ספגטי" if he else "Possible failure / spaghetti"
+        title = "🤖 Gadget — התראה אחרונה" if he else "🤖 Gadget — last alert"
+        lines = [f"{title}: {warning} ({age})."]
+        if record.get("file"):
+            name = _text(record["file"], 80).replace("\n", " ").replace("\r", " ")
+            lines.append(("קובץ: " if he else "File: ") + name)
+        lines.append("זהו מידע היסטורי, לא מצב חי." if he else "Historical alert, not live status.")
+        return "\n".join(lines)
 
     def enqueue_pause(self, text, code, filename):
         """Existing MQTT pause notices use the same worker for cross-source dedup."""

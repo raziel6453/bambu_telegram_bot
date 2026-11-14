@@ -193,6 +193,60 @@ class RelayTest(unittest.TestCase):
             self.assertIsNone(octo.start_notifications(False, self.directory.name, self.sender))
             factory.assert_not_called()
 
+    def test_gadget_without_alert_is_unknown_not_healthy(self):
+        self.assertIn("unknown", self.relay.gadget_status("en"))
+        for event in (12, 15, 16):
+            self.relay.receive(self.event(event))
+        self.assertIn("unknown", self.relay.gadget_status("en"))
+        self.assertIn("אינו ידוע", self.relay.gadget_status("he"))
+
+    def test_gadget_last_alert_survives_delivery_and_restart_with_age(self):
+        self.relay.receive(self.event(7, FileName="My print"))
+        self.relay.flush_once()
+        self.now += 120
+        restarted = octo.NotificationRelay(self.path, self.sender, clock=lambda: self.now)
+        text = restarted.gadget_status("en")
+        self.assertIn("2 min ago", text)
+        self.assertIn("My print", text)
+        self.assertIn("Historical alert", text)
+        self.assertNotIn(self.relay.state["secret"], text)
+        self.assertNotIn("PrinterId", text)
+        self.assertIn("התראה אחרונה", restarted.gadget_status("he"))
+
+    def test_gadget_smart_pause_is_status_only_and_not_a_duplicate_notification(self):
+        self.relay.receive(self.event(8))
+        self.assertIn("paused", self.relay.gadget_status("en"))
+        self.assertFalse(self.relay.flush_once())
+        self.sender.assert_not_called()
+        self.relay.receive(self.event(16))
+        self.assertIn("paused", self.relay.gadget_status("en"))
+
+    def test_repeated_warning_refreshes_last_receipt_without_telegram_duplicates(self):
+        self.relay.receive(self.event())
+        self.relay.flush_once()
+        self.now += 60
+        self.relay.receive(self.event())
+        self.assertFalse(self.relay.flush_once())
+        self.sender.assert_called_once()
+        self.assertIn("less than a minute", self.relay.gadget_status("en"))
+
+    def test_invalid_or_unpersisted_event_does_not_replace_last_gadget_alert(self):
+        self.relay.receive(self.event(7))
+        previous = dict(self.relay.state["last_gadget"])
+        self.assertEqual(self.relay.receive(self.event(8, SecretKey="wrong")), 403)
+        self.assertEqual(self.relay.receive(self.event(8, PrintId="")), 400)
+        with patch.object(self.relay, "_save", side_effect=OSError("disk full")):
+            self.assertEqual(self.relay.receive(self.event(8)), 503)
+        self.assertEqual(self.relay.state["last_gadget"], previous)
+
+    def test_old_alert_stays_historical_and_file_name_is_bounded(self):
+        self.relay.receive(self.event(FileName="x\n" * 500))
+        self.now += 3 * 86400
+        text = self.relay.gadget_status("en")
+        self.assertIn("3 days ago", text)
+        self.assertEqual(len(text.splitlines()), 3)
+        self.assertLess(len(text), 250)
+
 
 class HttpReceiverTest(unittest.TestCase):
     def test_local_http_auth_filter_and_async_delivery(self):
@@ -258,7 +312,15 @@ class BotHandlersTest(unittest.TestCase):
                     "_pause_reason": SimpleNamespace(code=0x12018011), "_state": {"filename": "My print"},
                     "tg_send": Mock(), "telebot": Mock()}
         self.env["_octo_notifications"].setup_values.return_value = ("http://addon:8765/octoeverywhere", "test-private-key")
-        names = {"t", "chat_ok", "cmd_octo", "_notify_pause", "_send_octo_notification"}
+        names = {"t", "chat_ok", "cmd_octo", "_notify_pause", "_send_octo_notification", "cmd_status", "_gadget_status_text"}
+        self.env.update({"_lock": threading.Lock(), "_status_event": Mock(), "request_pushall": Mock(),
+                         "SPOOLMAN_URL": "", "smart_remaining": lambda: 10, "fmt_mins": str,
+                         "finish_time": str, "ha_light_state": lambda: ("off", None),
+                         "_ha_weight_entity": lambda: None, "ha_snapshot": lambda: (b"image", None),
+                         "split_messages": lambda text: [text]})
+        self.env["_state"].update(printing=True, gcode_state="RUNNING", mc_percent=25, tray_now=0,
+                                  print_weight=80, layer_num=10, total_layer_num=100)
+        self.env["_octo_notifications"].gadget_status.return_value = "🤖 Gadget: historical warning"
         nodes = []
         source = APP / "bambu_monitor.py"
         for node in ast.parse(source.read_text()).body:
@@ -307,6 +369,36 @@ class BotHandlersTest(unittest.TestCase):
         self.env["_octo_notifications"] = None
         self.env["_notify_pause"]("another reason")
         self.assertEqual(self.env["tg_send"].call_count, 2)
+
+
+    def test_status_includes_gadget_when_printing_paused_or_idle(self):
+        for state in ("RUNNING", "PAUSE", "IDLE"):
+            self.env["_state"]["gcode_state"] = state
+            self.env["cmd_status"](SimpleNamespace(chat=SimpleNamespace(id=123)))
+            self.assertIn("Gadget: historical warning", self.env["bot"].reply_to.call_args.args[1])
+
+    def test_gadget_status_distinguishes_disabled_and_failed_receiver(self):
+        self.env["_octo_notifications"] = None
+        self.assertIn("אינו זמין", self.env["_gadget_status_text"]())
+        self.env["options"]["octoeverywhere_notifications"] = False
+        self.assertIn("לא הופעל", self.env["_gadget_status_text"]())
+        self.env["LANGUAGE"] = "en"
+        self.assertIn("not enabled", self.env["_gadget_status_text"]())
+
+    def test_short_photo_caption_contains_gadget_and_long_caption_becomes_text(self):
+        self.env["HA_AVAILABLE"] = True
+        message = SimpleNamespace(chat=SimpleNamespace(id=123))
+        self.env["cmd_status"](message)
+        self.assertIn("Gadget: historical warning", self.env["bot"].send_photo.call_args.kwargs["caption"])
+        self.env["_state"]["filename"] = "🧵" * 600
+        self.env["cmd_status"](message)
+        self.assertNotIn("caption", self.env["bot"].send_photo.call_args.kwargs)
+        self.assertIn("Gadget: historical warning", self.env["bot"].reply_to.call_args.args[1])
+
+    def test_unauthorized_status_does_not_reveal_gadget_history(self):
+        self.env["cmd_status"](SimpleNamespace(chat=SimpleNamespace(id=999)))
+        self.env["_octo_notifications"].gadget_status.assert_not_called()
+        self.env["bot"].reply_to.assert_not_called()
 
 
 if __name__ == "__main__":
