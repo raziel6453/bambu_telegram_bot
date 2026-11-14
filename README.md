@@ -197,6 +197,23 @@ To register: /set 1 Bambu PLA
 - The bot **auto-discovers** the HA weight sensor for printers that don't broadcast weight via MQTT (like the A1).
 - Override manually with `ha_weight_entity: "sensor.my_printer_weight"`.
 
+For example, set `ha_weight_entity: "sensor.a1_print_weight"` for an A1 with that
+entity name. At successful print completion, the bot reads its attributes such
+as `AMS 1 Tray 1: 81.49` and deducts those **estimated grams** from the spool
+mapped to slot 1. Map all used slots with `/map` before printing. The per-slot
+breakdown works even when the printer no longer reports an active tray at finish.
+Reported MQTT filament lengths take precedence; the bot never deducts both
+length and HA weight for the same completion.
+
+Only the first AMS's four slots are supported. Invalid, unsupported or stale
+HA breakdowns are reported without charging their total to another slot. When
+the print start time is known, the HA report (`last_reported`, or `last_updated`
+on older HA versions) must be no earlier than
+60 seconds before it (HA may receive a new job slightly before the bot).
+Missing usage, missing mappings and failed writes are shown in the completion
+message. The sensor provides an estimate for the print, not a physical scale
+reading or a live spool balance. Existing completed prints are not backfilled.
+
 > All commands are restricted to the configured `telegram_chat_id`. Messages from other users are silently ignored.
 
 ---

@@ -2,6 +2,8 @@
 import ast
 from datetime import datetime, timedelta, timezone
 import json
+import math
+import re
 from pathlib import Path
 import threading
 from types import SimpleNamespace
@@ -22,6 +24,8 @@ class FilamentAccountingTest(unittest.TestCase):
             "_spoolman_put": Mock(return_value=True),
             "_ha_weight_entity": Mock(return_value="sensor.print_weight"),
             "_ha_sensor": Mock(return_value="25.5"),
+            "_ha_slot_weights": Mock(return_value=({}, None)),
+            "math": math, "re": re,
             "_capture_spool_start": Mock(), "_check_low_stock": Mock(),
             "_persist_state": Mock(), "_add_history": Mock(), "tg_photo": Mock(),
             "t": lambda key, **kwargs: f"{key}: {kwargs}",
@@ -32,7 +36,7 @@ class FilamentAccountingTest(unittest.TestCase):
         selected = []
         for node in ast.parse(path.read_text()).body:
             if isinstance(node, ast.FunctionDef) and node.name in {
-                "_on_print_start", "_on_print_finish", "_spool_deduct", "on_message",
+                "_on_print_start", "_on_print_finish", "_spool_deduct", "on_message", "_parse_ha_slot_weights",
             }:
                 selected.append(node)
             elif isinstance(node, ast.Assign) and any(
@@ -110,6 +114,103 @@ class FilamentAccountingTest(unittest.TestCase):
         self.env["_ha_sensor"].return_value = "unavailable"
         self.assertEqual(self.finish()["grams"], 0)
         self.env["_spoolman_put"].assert_not_called()
+        self.assertIn("spoolman_no_weight", self.env["tg_photo"].call_args.args[0])
+
+    def test_user_ha_attributes_charge_slot_one_even_if_printer_unloaded_at_finish(self):
+        entity = {"state": "81.49", "attributes": {"unit_of_measurement": "g", "AMS 1 Tray 1": 81.49}}
+        weights = self.env["_parse_ha_slot_weights"](entity)
+        self.env["_ha_slot_weights"].return_value = weights
+        self.state["tray_now"] = 255
+        self.env["_ha_sensor"].return_value = "0"
+        history = self.finish()
+        self.env["_spoolman_put"].assert_called_once_with("/api/v1/spool/41/use", {"use_weight": 81.49})
+        self.assertEqual(history["grams"], 81.49)
+        self.assertEqual(history["spools_used"][0]["source"], "ha_print_weight")
+
+    def test_finish_fetches_full_configured_ha_entity_including_attributes(self):
+        path = Path(__file__).resolve().parents[1] / "bambu_telegram_bot" / "bambu_monitor.py"
+        node = next(n for n in ast.parse(path.read_text()).body if isinstance(n, ast.FunctionDef) and n.name == "_ha_slot_weights")
+        exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), self.env)
+        self.env["HA_API"] = "http://ha.invalid/api"
+        self.env["_ha_headers"] = lambda: {"Authorization": "Bearer test-only"}
+        self.env["_ha_weight_entity"].return_value = "sensor.a1_print_weight"
+        http = self.env["requests"] = Mock()
+        http.get.return_value.status_code = 200
+        http.get.return_value.json.return_value = {"state": "81.49", "attributes": {
+            "unit_of_measurement": "g", "AMS 1 Tray 1": 81.49}}
+        self.state["tray_now"] = 255
+        self.finish()
+        http.get.assert_called_once_with("http://ha.invalid/api/states/sensor.a1_print_weight",
+                                        headers={"Authorization": "Bearer test-only"}, timeout=5)
+        self.env["_spoolman_put"].assert_called_once_with("/api/v1/spool/41/use", {"use_weight": 81.49})
+
+    def test_ha_multi_slot_weights_never_deduct_total_from_last_slot(self):
+        self.env["_ha_slot_weights"].return_value = ({0: 81.49, 2: 12.5}, None)
+        history = self.finish(93.99)
+        self.assertEqual(self.env["_spoolman_put"].call_args_list, [
+            call("/api/v1/spool/41/use", {"use_weight": 81.49}),
+            call("/api/v1/spool/43/use", {"use_weight": 12.5}),
+        ])
+        self.assertEqual(history["grams"], 93.99)
+
+    def test_ha_failed_or_missing_mapping_is_reported_without_total_retry(self):
+        del self.mapping["0"]
+        self.env["_ha_slot_weights"].return_value = ({0: 81.49, 2: 12.5}, None)
+        self.env["_spoolman_put"].return_value = False
+        self.finish(93.99)
+        self.env["_spoolman_put"].assert_called_once_with("/api/v1/spool/43/use", {"use_weight": 12.5})
+        msg = self.env["tg_photo"].call_args.args[0]
+        self.assertIn("spoolman_no_mapping", msg)
+        self.assertIn("spoolman_deduct_fail", msg)
+
+    def test_mqtt_lengths_take_priority_over_ha_grams_without_double_deduction(self):
+        self.state["filament_used"] = [1.5, 0, 0, 0]
+        self.env["_ha_slot_weights"].return_value = ({0: 81.49}, None)
+        self.finish(81.49)
+        self.env["_ha_slot_weights"].assert_not_called()
+        self.env["_spoolman_put"].assert_called_once_with("/api/v1/spool/41/use", {"use_length": 1500.0})
+
+    def test_bad_or_stale_ha_breakdown_never_falls_back_to_active_slot(self):
+        for reason in ("invalid", "stale", "unsupported"):
+            self.env["_ha_slot_weights"].return_value = ({}, reason)
+            self.finish(81.49)
+            self.assertIn("spoolman_bad_breakdown", self.env["tg_photo"].call_args.args[0])
+        self.env["_spoolman_put"].assert_not_called()
+
+    def test_parser_rejects_partial_invalid_and_unsupported_trays(self):
+        for key, value in [("AMS 1 Tray 2", None), ("AMS 1 Tray 2", "nan"),
+                           ("AMS 1 Tray 2", "inf"), ("AMS 1 Tray 2", -1),
+                           ("AMS 1 Tray 2", True), ("AMS 2 Tray 1", 3), ("External Spool", 10)]:
+            entity = {"state": "81.49", "attributes": {"unit_of_measurement": "g", "AMS 1 Tray 1": 81.49, key: value}}
+            weights, reason = self.env["_parse_ha_slot_weights"](entity)
+            self.assertFalse(weights)
+            self.assertIn(reason, ("invalid", "unsupported"))
+
+    def test_parser_preserves_exact_grams_and_ignores_zero_trays(self):
+        entity = {"state": "81.49", "attributes": {"unit_of_measurement": "g", "AMS 1 Tray 1": "81.49", "AMS 1 Tray 2": 0}}
+        self.assertEqual(self.env["_parse_ha_slot_weights"](entity), ({0: 81.49}, None))
+        entity["attributes"]["unit_of_measurement"] = "kg"
+        self.assertEqual(self.env["_parse_ha_slot_weights"](entity), ({}, "invalid"))
+
+    def test_previous_job_and_unavailable_sensor_are_not_used(self):
+        start = datetime(2026, 11, 14, 10, tzinfo=timezone.utc)
+        entity = {"state": "81.49", "last_updated": "2026-11-14T09:00:00+00:00",
+                  "attributes": {"unit_of_measurement": "g", "AMS 1 Tray 1": 81.49}}
+        self.assertEqual(self.env["_parse_ha_slot_weights"](entity, start), ({}, "stale"))
+        entity["last_reported"] = "2026-11-14T10:05:00+00:00"
+        self.assertEqual(self.env["_parse_ha_slot_weights"](entity, start), ({0: 81.49}, None))
+        del entity["last_reported"]
+        entity["last_updated"] = "2026-11-14T09:59:50+00:00"
+        self.assertEqual(self.env["_parse_ha_slot_weights"](entity, start), ({0: 81.49}, None))
+        entity["state"] = "unavailable"
+        self.assertEqual(self.env["_parse_ha_slot_weights"](entity, start), ({}, "unavailable"))
+
+    def test_duplicate_finish_reports_do_not_repeat_ha_deduction(self):
+        self.env["_ha_slot_weights"].return_value = ({0: 81.49}, None)
+        message = SimpleNamespace(payload=json.dumps({"print": {"gcode_state": "FINISH"}}).encode())
+        self.env["on_message"](None, None, message)
+        self.env["on_message"](None, None, message)
+        self.env["_spoolman_put"].assert_called_once_with("/api/v1/spool/41/use", {"use_weight": 81.49})
 
     def test_duplicate_finish_reports_do_not_deduct_twice(self):
         payload = {"print": {"gcode_state": "FINISH", "print_weight": 50}}

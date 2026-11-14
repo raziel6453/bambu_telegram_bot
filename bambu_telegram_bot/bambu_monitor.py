@@ -4,7 +4,7 @@ BambuBuddy — Home Assistant Add-on
 Clean rewrite. Supports A1/P1/X1 via local or cloud MQTT.
 """
 
-import os, sys, json, html, ssl, threading, logging, requests, yaml, time
+import os, sys, json, html, ssl, threading, logging, requests, yaml, time, math, re
 from datetime import datetime, timedelta, timezone
 from spool_wizard import SpoolWizard
 from spool_display import slot_keyboard, spool_description, split_messages
@@ -18,7 +18,7 @@ _pause_reason = PauseReason()
 _diagnostics = PrinterDiagnostics()
 _octo_notifications = None
 
-VERSION = "2.0.21"
+VERSION = "2.0.22"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:
@@ -200,6 +200,10 @@ STRINGS = {
         "spool_loaded":      "🔄 <b>זוהה ספול חדש בסלוט {slot}</b>\nמותג: {brand}\nסוג: {type}\n\nמה תרצה לעשות?",
         "ask_create_weight": "⚖️ מה המשקל ההתחלתי (בגרמים) עבור גליל ה- {brand} {type} החדש?\n\n(שלח מספר, או /cancel לביטול)",
         "create_success":    "✅ ספול חדש נוצר ומופה לסלוט {slot}! מזהה ספול: #{sid}.",
+        "spoolman_no_mapping": "⚠️ Spoolman: לא קוזז משקל מסלוט {slot} כי אין לו שיוך לספול. הגדר /map.",
+        "spoolman_no_slot": "⚠️ Spoolman: המשקל לא עודכן כי לא ניתן לזהות סלוט משויך. בדוק /map ואת ha_weight_entity.",
+        "spoolman_no_weight": "⚠️ Spoolman: המשקל לא עודכן כי חסרים נתוני צריכת פילמנט. בדוק את ha_weight_entity.",
+        "spoolman_bad_breakdown": "⚠️ Spoolman: המשקל לא עודכן כי פירוט המשקל ישן, לא תקין או כולל סלוט שאינו נתמך. בדוק את חיישן ha_weight_entity.",
         "spoolman_deduct_ok": "\n\n✅ <b>Spoolman:</b> קוזז {amount} מספול #{sid}",
         "spoolman_deduct_fail": "\n\n❌ <b>Spoolman:</b> שגיאה בקיזוז משקל מספול #{sid}",
         "low_stock":         "⚠️ ספול #{sid} ({label}) על סיום — נותר {grams}g בלבד!",
@@ -302,6 +306,10 @@ STRINGS = {
         "spool_loaded":      "🔄 <b>New Spool Detected in Slot {slot}</b>\nBrand: {brand}\nType: {type}\n\nWhat would you like to do?",
         "ask_create_weight": "⚖️ What is the initial weight (in grams) for the new {brand} {type} spool?\n\n(Send a number, or /cancel to abort)",
         "create_success":    "✅ Spool successfully created and mapped to Slot {slot}! Spool #{sid}.",
+        "spoolman_no_mapping": "⚠️ Spoolman: slot {slot} was not deducted because it has no spool mapping. Use /map.",
+        "spoolman_no_slot": "⚠️ Spoolman: weight was not updated because the mapped slot could not be identified. Check /map and ha_weight_entity.",
+        "spoolman_no_weight": "⚠️ Spoolman: weight was not updated because filament usage is missing. Check ha_weight_entity.",
+        "spoolman_bad_breakdown": "⚠️ Spoolman: weight was not updated because the breakdown is stale, invalid or includes an unsupported slot. Check ha_weight_entity.",
         "spoolman_deduct_ok": "\n\n✅ <b>Spoolman:</b> Deducted {amount} from Spool #{sid}",
         "spoolman_deduct_fail": "\n\n❌ <b>Spoolman:</b> Failed to deduct weight from Spool #{sid}",
         "low_stock":         "⚠️ Spool #{sid} ({label}) is running low — only {grams}g left!",
@@ -556,6 +564,62 @@ def _ha_weight_entity():
     return _discovered.get("weight")
 
 
+def _parse_ha_slot_weights(entity, start_time=None):
+    """HA print-weight attributes are estimated grams per physical AMS tray."""
+    if not isinstance(entity, dict) or entity.get("state") in ("unknown", "unavailable"):
+        return {}, "unavailable"
+    attributes = entity.get("attributes") or {}
+    if not isinstance(attributes, dict):
+        return {}, "invalid"
+    values = {}
+    for label, value in attributes.items():
+        match = re.fullmatch(r"AMS (\d+) Tray (\d+)", label)
+        if not match and not label.lower().startswith("external spool"):
+            continue
+        try:
+            grams = float(value)
+            if isinstance(value, bool) or not math.isfinite(grams) or grams < 0:
+                raise ValueError()
+        except (TypeError, ValueError, OverflowError):
+            return {}, "invalid"
+        if grams == 0:
+            continue
+        # This bot maps only the four trays of its first AMS. Never merge others.
+        if not match or int(match[1]) != 1 or not 1 <= int(match[2]) <= 4:
+            return {}, "unsupported"
+        values[int(match[2]) - 1] = grams
+    if values:
+        if attributes.get("unit_of_measurement") != "g":
+            return {}, "invalid"
+        if start_time:
+            try:
+                # Repeating the same print can report identical values. HA then
+                # refreshes last_reported without changing last_updated.
+                reported = entity.get("last_reported") or entity["last_updated"]
+                updated = datetime.fromisoformat(reported.replace("Z", "+00:00"))
+                # Allow a small lead: HA can receive the new job before this bot.
+                if updated.timestamp() < start_time.timestamp() - 60:
+                    return {}, "stale"
+            except (KeyError, ValueError, TypeError, AttributeError):
+                return {}, "stale"
+    return values, None
+
+
+def _ha_slot_weights():
+    if not HA_AVAILABLE:
+        return {}, "unavailable"
+    entity = _ha_weight_entity()
+    if not entity:
+        return {}, "unavailable"
+    try:
+        response = requests.get(f"{HA_API}/states/{entity}", headers=_ha_headers(), timeout=5)
+        if response.status_code == 200:
+            return _parse_ha_slot_weights(response.json(), _state.get("start_time"))
+    except Exception as error:
+        log.warning("HA per-slot print weight unavailable (%s)", type(error).__name__)
+    return {}, "unavailable"
+
+
 def ha_snapshot():
     """Returns (bytes_or_None, error_str_or_None)."""
     if not HA_AVAILABLE:
@@ -801,12 +865,14 @@ def _capture_spool_start(tray: int):
 
 
 def _spool_deduct(tray: int, weight_g: float = None, length_mm: float = None) -> str:
-    if tray == 255 or not SPOOLMAN_URL:
-        return ""
+    if not SPOOLMAN_URL:
+        return t("spoolman_no_url")
+    if type(tray) is not int or not 0 <= tray <= 3:
+        return t("spoolman_no_slot")
     mapping  = load_mapping()
     spool_id = mapping.get(str(tray))
     if not spool_id:
-        return ""
+        return t("spoolman_no_mapping", slot=tray + 1)
         
     payload = {}
     val_str = ""
@@ -975,6 +1041,19 @@ def _on_print_finish(filename, weight):
                 pass
 
     if not spools_used:
+        slot_weights, weight_error = _ha_slot_weights()
+        if slot_weights:
+            weight = round(sum(slot_weights.values()), 2)
+            for tray, grams in sorted(slot_weights.items()):
+                msg = _spool_deduct(tray=tray, weight_g=grams)
+                spools_used.append({"slot": tray, "spool_id": mapping.get(str(tray)),
+                                    "amount": f"{grams:.2f}g", "source": "ha_print_weight"})
+                spool_status += f"\n\n{msg}"
+        elif weight_error in ("invalid", "unsupported", "stale"):
+            # Partial/stale breakdowns must not charge the total to the last tray.
+            spool_status += "\n\n" + t("spoolman_bad_breakdown")
+
+    if not spools_used and not spool_status:
         # Use total weight only when no positive filament lengths were reported.
         # Missing mappings or failed requests must not charge another spool or
         # repeat a deduction that may already have reached Spoolman.
@@ -984,6 +1063,8 @@ def _on_print_finish(filename, weight):
             spools_used.append({"slot": active_tray, "spool_id": mapping.get(str(active_tray)), "amount": val_str})
             if msg:
                 spool_status += f"\n\n{msg}"
+        else:
+            spool_status += "\n\n" + t("spoolman_no_weight" if weight <= 0 else "spoolman_no_slot")
 
     w_str = f"{weight:.1f}g" if weight > 0 else "–"
     log.info(f"Print finished: {filename} in {dur}")
