@@ -1,7 +1,7 @@
 FROM python:3.11-alpine
 
 # Build tools support dependencies without wheels on some architectures.
-RUN apk add --no-cache gcc musl-dev linux-headers python3-dev bash
+RUN apk add --no-cache gcc musl-dev linux-headers python3-dev bash tzdata
 
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt

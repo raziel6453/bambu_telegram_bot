@@ -19,6 +19,7 @@ A Telegram bot that monitors your **Bambu Lab 3D printer** (A1 / P1 / X1 series)
 - ⚖️ **Auto HA Discovery** — auto-detects Home Assistant weight sensor, camera, and light entities dynamically.
 - 💡 **Light control** — `/light` toggles your printer lamp (via HA integration).
 - 🌐 **Multi-language** — Hebrew (`he`) and English (`en`).
+- 🕒 **Israel local time** — finish times, camera timestamps and new history entries follow `Asia/Jerusalem`, including automatic summer/winter changes. Standalone Python installations need a system timezone database or the Python `tzdata` package; Docker includes it.
 - 🐳 **Docker-ready** — runs seamlessly as a Home Assistant add-on or standalone Python script.
 
 ---

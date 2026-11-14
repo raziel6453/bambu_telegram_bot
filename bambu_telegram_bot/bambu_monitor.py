@@ -6,6 +6,7 @@ Clean rewrite. Supports A1/P1/X1 via local or cloud MQTT.
 
 import os, sys, json, html, ssl, threading, logging, requests, yaml, time, math, re
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from spool_wizard import SpoolWizard
 from spool_display import slot_keyboard, spool_description, split_messages
 from inventory_share import start_inventory_share
@@ -18,7 +19,7 @@ _pause_reason = PauseReason()
 _diagnostics = PrinterDiagnostics()
 _octo_notifications = None
 
-VERSION = "2.0.23"
+VERSION = "2.0.24"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:
@@ -88,7 +89,7 @@ SPOOLMAN_MAPPING_FILE = os.path.join(DATA_DIR, "spoolman_mapping.json")
 PRINT_HISTORY_FILE    = os.path.join(DATA_DIR, "print_history.json")
 STATE_FILE            = os.path.join(DATA_DIR, "persist_state.json")
 
-JERUSALEM = timezone(timedelta(hours=3))
+JERUSALEM = ZoneInfo("Asia/Jerusalem")
 
 # ── Validation ────────────────────────────────────────────────────────────────
 if not options:
@@ -451,12 +452,14 @@ def finish_time(remaining_mins: int) -> str:
             if raw and "T" in str(raw):
                 try:
                     dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-                    return dt.astimezone(JERUSALEM).strftime("%H:%M")
+                    if dt.tzinfo is not None:
+                        return dt.astimezone(JERUSALEM).strftime("%H:%M")
                 except Exception:
                     pass
     if remaining_mins <= 0:
         return "–"
-    return (datetime.now(JERUSALEM) + timedelta(minutes=remaining_mins)).strftime("%H:%M")
+    # Remaining minutes are elapsed time; add in UTC across DST transitions.
+    return (datetime.now(timezone.utc) + timedelta(minutes=remaining_mins)).astimezone(JERUSALEM).strftime("%H:%M")
 
 
 # ── JSON Persistence ──────────────────────────────────────────────────────────
