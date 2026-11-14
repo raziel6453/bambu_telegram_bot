@@ -14,7 +14,6 @@ COPY pause_reason.py /app/pause_reason.py
 COPY printer_diagnostics.py /app/printer_diagnostics.py
 COPY inventory_share.py /app/inventory_share.py
 COPY octoeverywhere_notifications.py /app/octoeverywhere_notifications.py
-COPY ai_chat.py /app/ai_chat.py
 COPY run.sh /app/run.sh
 RUN chmod a+x /app/run.sh
 
