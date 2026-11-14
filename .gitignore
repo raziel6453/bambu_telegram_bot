@@ -14,3 +14,5 @@ print_history.json
 persist_state.json
 octoeverywhere_notifications.json
 octoeverywhere_notifications.tmp
+ai_usage.json
+ai_usage.tmp

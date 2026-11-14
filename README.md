@@ -11,6 +11,7 @@ A Telegram bot that monitors your **Bambu Lab 3D printer** (A1 / P1 / X1 series)
 - 📸 **Camera snapshots** — included on print start, progress milestones (25/50/75%), and completion.
 - 📬 **Smart notifications** — print start, progress, completion, failure, low-filament, and new spool detection.
 - 🚨 **OctoEverywhere alerts** — optional Gadget failure warnings, intervention requests and bed-cooled notices, with duplicate filtering.
+- 🤖 **AI chat** — optional Hebrew/English conversation about your print and filament inventory, with read-only OctoEverywhere MCP access.
 - 🎛️ **Remote control** — pause, resume, and cancel prints directly from Telegram.
 - 📋 **Print history** — every completed print is logged; view the last 10 with `/history`.
 - 🧵 **Spoolman integration** — auto-deducts usage on completion, alerts when a spool runs low, and creates new spools on demand.
@@ -136,6 +137,65 @@ updates through the configuration version.
 | `/octo` | Set up selected OctoEverywhere alerts in your authorized private chat |
 | `/help` | Show all commands |
 
+### 🤖 AI chat (optional)
+| Command | Description |
+|---------|-------------|
+| `/ai` | Start a conversation; ordinary text becomes follow-up questions |
+| `/ai <question>` | Start or continue with a question immediately |
+| `/aireset` | Clear the conversation, then use `/ai` to start fresh |
+| `/aistop` | End the conversation and clear its memory |
+
+### Set up AI chat
+
+AI chat is **off by default** and needs an OpenAI API key. It works in the
+configured **private Telegram chat** only. No AI calls happen until you enable
+the feature and send a question.
+
+1. Create an [OpenAI API key](https://platform.openai.com/api-keys) and make sure
+   your API account has available credit/quota.
+2. In BambuBuddy's add-on configuration, set `ai_enabled: true` and enter the key
+   in `openai_api_key`. Keep the default `ai_model: gpt-5.4-mini` to start.
+3. For live OctoEverywhere readings and camera questions, get your private access
+   token from the [OctoEverywhere MCP page](https://octoeverywhere.com/mcp) and
+   paste it in `octoeverywhere_mcp_token`. Leave printer control disabled there.
+   This token is different from the `/octo` notification Secret Key.
+4. Save, restart BambuBuddy, then send `/ai איך ההדפסה שלי?` or `/ai How is my print?`.
+   Continue with ordinary text. `/aistop` exits; 30 minutes without activity also
+   expires the session.
+
+Enter keys only in private add-on settings, never in Telegram or tracked files.
+Without an MCP token, AI can still use the bot's last printer status, pause reason,
+slot mappings and a fresh Spoolman inventory read. A missing or old printer report
+is marked as such; inventory failures are not reported as an empty inventory.
+
+The chat provides advice and **read-only** data. Printer and inventory actions
+continue through the existing bot commands. Only MCP tools annotated as read-only
+are exposed; the chat never approves write tools. If the server does not provide
+usable read-only tools, it reports that limitation. Multiple printers require
+choosing which one to inspect. See the [OctoEverywhere setup guide](https://blog.octoeverywhere.com/setup-cloud-mcp-for-your-3d-printer/)
+for account-side setup.
+
+Existing commands and active spool forms take priority over chat. Finish or
+cancel a spool form before starting an AI question. Only one AI request runs at
+a time; `/aireset` or `/aistop` discards a pending answer but cannot undo API usage
+already incurred. Camera questions can use snapshots returned by MCP; uploading
+Telegram photos is not supported by this text-chat feature.
+
+`ai_daily_limit` defaults to **50 requests per UTC day**, including failed
+attempts. The counter survives restarts and conversation resets. Each request
+allows at most 1,200 output tokens and four tool calls. This is a request limit,
+not a monetary spending cap; API usage is billed by your provider.
+
+Questions, up to six prior exchanges, selected printer readings and selected
+inventory fields are sent to OpenAI; MCP results may also include camera images.
+Raw MQTT, printer credentials, Spoolman notes, locations and prices are excluded.
+Inventories are limited to 100 spools/24,000 characters, with totals and an explicit
+partial-data flag. Conversation history stays in bot memory and is cleared by
+stop/reset or restart; it is not saved to disk. Requests use `store: false` (this
+does not change OpenAI's API data-retention policies). The
+[Responses MCP guide](https://developers.openai.com/api/docs/guides/tools-connectors-mcp)
+describes the external connection.
+
 ---
 
 ## 🧵 Spoolman Integration
@@ -215,6 +275,11 @@ To register: /set 1 Bambu PLA
 | `low_stock_threshold` | | Alert below this many grams (default: `100`) |
 | `ha_camera_entity` | | HA camera entity ID (auto-discovered if blank) |
 | `octoeverywhere_notifications` | | Enable the authenticated local OctoEverywhere notification receiver (default: `false`) |
+| `ai_enabled` | | Enable optional AI chat (default: `false`) |
+| `openai_api_key` | | Private OpenAI API key for AI chat |
+| `ai_model` | | Responses/MCP-capable model (default: `gpt-5.4-mini`) |
+| `ai_daily_limit` | | AI attempts per UTC day, including failures (1–500; default: `50`) |
+| `octoeverywhere_mcp_token` | | Optional private MCP access token for read-only printer tools |
 | `ha_light_entity` | | HA light entity ID (auto-discovered if blank) |
 | `ha_weight_entity` | | HA weight sensor entity ID (auto-discovered if blank) |
 | `bambu_username` | | Bambu Cloud email (for cloud MQTT fallback) |

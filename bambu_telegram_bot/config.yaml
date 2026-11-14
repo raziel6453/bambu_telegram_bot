@@ -1,5 +1,5 @@
 name: "BambuBuddy"
-version: "2.0.19"
+version: "2.0.20"
 slug: "bambu_telegram_monitor"
 description: "Monitors Bambu Lab A1/P1/X1 printers and sends Telegram notifications. Supports Spoolman, HA camera, light control, and remote print management."
 url: "https://github.com/raziel6453/bambu_telegram_bot"
@@ -27,6 +27,11 @@ options:
   inventory_share_url: ""
   inventory_share_token: ""
   octoeverywhere_notifications: false
+  ai_enabled: false
+  openai_api_key: ""
+  ai_model: "gpt-5.4-mini"
+  ai_daily_limit: 50
+  octoeverywhere_mcp_token: ""
   ha_camera_entity: ""
   ha_light_entity: ""
   ha_weight_entity: ""
@@ -44,6 +49,11 @@ schema:
   inventory_share_url: str?
   inventory_share_token: password?
   octoeverywhere_notifications: bool?
+  ai_enabled: bool?
+  openai_api_key: password?
+  ai_model: str?
+  ai_daily_limit: int(1,500)?
+  octoeverywhere_mcp_token: password?
   ha_camera_entity: str?
   ha_light_entity: str?
   ha_weight_entity: str?

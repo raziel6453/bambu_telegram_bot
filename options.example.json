@@ -8,6 +8,11 @@
   "bambu_password": "",
   "spoolman_url": "",
   "octoeverywhere_notifications": false,
+  "ai_enabled": false,
+  "openai_api_key": "",
+  "ai_model": "gpt-5.4-mini",
+  "ai_daily_limit": 50,
+  "octoeverywhere_mcp_token": "",
   "low_stock_threshold": 100,
   "language": "he"
 }

@@ -12,13 +12,14 @@ from inventory_share import start_inventory_share
 from printer_diagnostics import PrinterDiagnostics
 from pause_reason import PauseReason
 from octoeverywhere_notifications import start_notifications, notification_text
+from ai_chat import AiChat, bot_context
 
 _pause_reason = PauseReason()
 
 _diagnostics = PrinterDiagnostics()
 _octo_notifications = None
 
-VERSION = "2.0.19"
+VERSION = "2.0.20"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:
@@ -125,6 +126,9 @@ def setup_bot_commands():
         telebot.types.BotCommand("history", "Last 10 completed prints"),
         telebot.types.BotCommand("cam", "Live camera snapshot"),
         telebot.types.BotCommand("octo", "Set up OctoEverywhere alerts"),
+        telebot.types.BotCommand("ai", "Start AI chat or ask a question"),
+        telebot.types.BotCommand("aireset", "Clear AI conversation"),
+        telebot.types.BotCommand("aistop", "End AI chat"),
         telebot.types.BotCommand("pause", "Pause current print"),
         telebot.types.BotCommand("resume", "Resume paused print"),
         telebot.types.BotCommand("cancel", "Cancel print (asks confirmation)"),
@@ -234,6 +238,10 @@ STRINGS = {
             "🎥 <b>מצלמה</b>\n"
             "/cam — צילום חי\n\n"
             "/octo — חיבור התראות OctoEverywhere\n\n"
+            "🤖 <b>שיחת AI</b>\n"
+            "/ai — פתיחת שיחה (דורש מפתח API)\n"
+            "/aireset — ניקוי זיכרון השיחה\n"
+            "/aistop — יציאה מהשיחה\n\n"
             "⚡ <b>שליטה מרחוק</b>\n"
             "/pause — עצירת הדפסה\n"
             "/resume — המשך הדפסה\n"
@@ -336,6 +344,10 @@ STRINGS = {
             "🎥 <b>Camera</b>\n"
             "/cam — Live snapshot (requires HA)\n\n"
             "/octo — Set up OctoEverywhere alerts\n\n"
+            "🤖 <b>AI chat</b>\n"
+            "/ai — Start chat (requires an API key)\n"
+            "/aireset — Clear conversation history\n"
+            "/aistop — End AI chat\n\n"
             "⚡ <b>Remote Control</b>\n"
             "/pause — Pause current print\n"
             "/resume — Resume paused print\n"
@@ -640,6 +652,7 @@ _initial_ams_sync_done = False
 _lock          = threading.Lock()
 _mqtt_client   = None
 _status_event  = threading.Event()
+_ai_last_status_received = None  # Monotonic; restored state is never presented as fresh.
 
 
 def _restore_state():
@@ -1057,6 +1070,7 @@ def on_disconnect(client, userdata, rc):
 
 
 def on_message(client, userdata, msg):
+    global _ai_last_status_received
     try:
         payload = json.loads(msg.payload.decode())
     except Exception:
@@ -1066,10 +1080,12 @@ def on_message(client, userdata, msg):
     if not isinstance(payload, dict):
         return
     print_data = payload.get("print", {})
-    if not print_data:
+    if not isinstance(print_data, dict) or not print_data:
         return
 
     with _lock:
+        if "gcode_state" in print_data:
+            _ai_last_status_received = time.monotonic()
         _status_event.set()
         _state["_raw_print"] = print_data
 
@@ -1960,6 +1976,32 @@ def cmd_debug(message):
     if len(msg) > 4000:
         msg = msg[:4000] + "\n… (truncated)"
     bot.reply_to(message, msg, parse_mode="HTML")
+
+
+def _ai_context():
+    with _lock:
+        state = dict(_state)
+        age = (round(max(0, time.monotonic() - _ai_last_status_received), 1)
+               if _ai_last_status_received is not None else None)
+        reason = _pause_reason.describe("en", state.get("tray_now")) if state.get("gcode_state") == "PAUSE" else None
+    with _mapping_lock:
+        mapping = load_mapping()
+    # Network reads stay outside the MQTT lock and run in the AI worker.
+    return bot_context(state, age, _spoolman_get("/api/v1/spool"), mapping, reason)
+
+
+def _ai_form_active(message):
+    key = _mapping_key(message)
+    with _mapping_lock:
+        if key in _pending_maps:
+            return True
+    with _spool_wizard.lock:
+        return key in _spool_wizard.sessions
+
+
+# Last registration: ordinary commands and active spool flows take priority.
+_ai_chat = AiChat(bot, options, DATA_DIR, _ai_context, _ai_form_active)
+_ai_chat.register()
 
 
 # ── MQTT Connection ───────────────────────────────────────────────────────────
