@@ -19,7 +19,7 @@ _pause_reason = PauseReason()
 _diagnostics = PrinterDiagnostics()
 _octo_notifications = None
 
-VERSION = "2.0.25"
+VERSION = "2.0.26"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:
@@ -205,8 +205,8 @@ STRINGS = {
         "spoolman_no_slot": "⚠️ Spoolman: המשקל לא עודכן כי לא ניתן לזהות סלוט משויך. בדוק /map ואת ha_weight_entity.",
         "spoolman_no_weight": "⚠️ Spoolman: המשקל לא עודכן כי חסרים נתוני צריכת פילמנט. בדוק את ha_weight_entity.",
         "spoolman_bad_breakdown": "⚠️ Spoolman: המשקל לא עודכן כי פירוט המשקל ישן, לא תקין או כולל סלוט שאינו נתמך. בדוק את חיישן ha_weight_entity.",
-        "spoolman_deduct_ok": "\n\n✅ <b>Spoolman:</b> קוזז {amount} מספול #{sid}",
-        "spoolman_deduct_fail": "\n\n❌ <b>Spoolman:</b> שגיאה בקיזוז משקל מספול #{sid}",
+        "spoolman_deduct_ok": "✅ Spoolman: קוזז {amount} מספול #{sid}",
+        "spoolman_deduct_fail": "❌ Spoolman: שגיאה בקיזוז משקל מספול #{sid}",
         "low_stock":         "⚠️ ספול #{sid} ({label}) על סיום — נותר {grams}g בלבד!",
         "history_title":     "🗒️ *היסטוריית הדפסות:*\n",
         "history_item":      "📅 {date} | {filename} | {duration} | {usage}\n",
@@ -311,8 +311,8 @@ STRINGS = {
         "spoolman_no_slot": "⚠️ Spoolman: weight was not updated because the mapped slot could not be identified. Check /map and ha_weight_entity.",
         "spoolman_no_weight": "⚠️ Spoolman: weight was not updated because filament usage is missing. Check ha_weight_entity.",
         "spoolman_bad_breakdown": "⚠️ Spoolman: weight was not updated because the breakdown is stale, invalid or includes an unsupported slot. Check ha_weight_entity.",
-        "spoolman_deduct_ok": "\n\n✅ <b>Spoolman:</b> Deducted {amount} from Spool #{sid}",
-        "spoolman_deduct_fail": "\n\n❌ <b>Spoolman:</b> Failed to deduct weight from Spool #{sid}",
+        "spoolman_deduct_ok": "✅ Spoolman: Deducted {amount} from Spool #{sid}",
+        "spoolman_deduct_fail": "❌ Spoolman: Failed to deduct weight from Spool #{sid}",
         "low_stock":         "⚠️ Spool #{sid} ({label}) is running low — only {grams}g left!",
         "history_title":     "🗒️ *Print History:*\n",
         "history_item":      "📅 {date} | {filename} | {duration} | {usage}\n",
