@@ -392,7 +392,7 @@ Receive these three additional alerts in the existing BambuBuddy Telegram chat:
 
 - **Possible print failure / spaghetti** reported by Gadget (event 7).
 - **User intervention required**, with the reported error and code when available (event 12).
-- **Print bed cooled down** after printing (event 15).
+- **Print bed cooled down** after printing (event 15), with the latest MQTT bed temperature in °C. If no valid reading has arrived in the last three minutes, the message says the temperature is unavailable.
 
 The notification can include OctoEverywhere's event snapshot and an **Open printer**
 button. If the image cannot be sent, the text still arrives. These snapshots do not

@@ -19,7 +19,7 @@ _pause_reason = PauseReason()
 _diagnostics = PrinterDiagnostics()
 _octo_notifications = None
 
-VERSION = "2.0.24"
+VERSION = "2.0.25"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:
@@ -768,7 +768,13 @@ def _send_octo_notification(event):
     if "text" in event:
         bot.send_message(TELEGRAM_CHAT_ID, event["text"], parse_mode=None, timeout=15)
         return
-    text = notification_text(event, LANGUAGE)
+    bed_temperature = None
+    if event.get("EventType") == 15:
+        with _lock:
+            reading = _state.get("_bed_temperature")
+        if reading and 0 <= time.monotonic() - reading[1] <= 180:
+            bed_temperature = reading[0]
+    text = notification_text(event, LANGUAGE, bed_temperature)
     keyboard = None
     if event.get("QuickViewUrl"):
         keyboard = telebot.types.InlineKeyboardMarkup()
@@ -1156,6 +1162,15 @@ def on_message(client, userdata, msg):
     with _lock:
         _status_event.set()
         _state["_raw_print"] = print_data
+        # MQTT reports are incremental; unrelated messages must not refresh the
+        # age of a temperature sample. This transient reading is not restored.
+        if "bed_temper" in print_data:
+            value = print_data["bed_temper"]
+            _state["_bed_temperature"] = (
+                (value, time.monotonic())
+                if type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 150
+                else None
+            )
 
         # ── Extract fields, falling back to current state ──────────────────
         gcode_state  = print_data.get("gcode_state",         _state["gcode_state"])

@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import ipaddress
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -81,15 +82,23 @@ def _text(value, limit):
     return str(value or "").replace("\x00", "")[:limit]
 
 
-def notification_text(event, language):
+def notification_text(event, language, bed_temperature=None):
     he = language == "he"
     titles = {
         7: ("🚨 Gadget detected a possible print failure / spaghetti.", "🚨 Gadget זיהה חשד לכשל בהדפסה / ספגטי."),
         12: ("🙋 The printer needs your attention.", "🙋 המדפסת דורשת התערבות שלך."),
-        15: ("❄️ OctoEverywhere reports that the print bed has cooled down.", "❄️ OctoEverywhere מדווח שמשטח ההדפסה התקרר."),
+        15: ("❄️ The bed has cooled down.", "❄️ המיטה התקררה."),
         16: ("✅ OctoEverywhere test received by BambuBuddy.", "✅ בדיקת החיבור מ־OctoEverywhere התקבלה ב־BambuBuddy."),
     }
     lines = [titles[event["EventType"]][int(he)]]
+    if event["EventType"] == 15:
+        if (type(bed_temperature) in (int, float) and math.isfinite(bed_temperature)
+                and 0 <= bed_temperature <= 150):
+            lines.append(("🌡️ טמפרטורת המיטה: " if he else "🌡️ Bed temperature: ")
+                         + f"{bed_temperature:.1f}".rstrip("0").rstrip(".") + "°C")
+        else:
+            lines.append("🌡️ טמפרטורת המיטה אינה זמינה כרגע." if he
+                         else "🌡️ Bed temperature is currently unavailable.")
     if event.get("FileName"):
         lines.append(("📄 קובץ: " if he else "📄 File: ") + _text(event["FileName"], 120))
     if event["EventType"] == 12:

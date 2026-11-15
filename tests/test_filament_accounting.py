@@ -51,6 +51,19 @@ class FilamentAccountingTest(unittest.TestCase):
         self.env["_on_print_finish"]("part.3mf", weight)
         return self.env["_add_history"].call_args.args[0]
 
+    def test_bed_temperature_retains_its_own_sample_time_across_mqtt_deltas(self):
+        self.env["time"].monotonic.return_value = 1000
+        def receive(data):
+            self.env["on_message"](None, None, SimpleNamespace(
+                payload=json.dumps({"print": data}).encode()))
+        receive({"bed_temper": 35.5})
+        self.assertEqual(self.state["_bed_temperature"], (35.5, 1000))
+        self.env["time"].monotonic.return_value = 1200
+        receive({"mc_percent": 10})
+        self.assertEqual(self.state["_bed_temperature"], (35.5, 1000))
+        receive({"bed_temper": None})
+        self.assertIsNone(self.state["_bed_temperature"])
+
     def test_home_assistant_weight_reaches_deduction_message_and_history(self):
         history = self.finish()
         self.env["_spoolman_put"].assert_called_once_with("/api/v1/spool/42/use", {"use_weight": 25.5})

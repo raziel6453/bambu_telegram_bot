@@ -311,6 +311,7 @@ class BotHandlersTest(unittest.TestCase):
                     "_octo_notifications": Mock(), "notification_text": octo.notification_text,
                     "_pause_reason": SimpleNamespace(code=0x12018011), "_state": {"filename": "My print"},
                     "tg_send": Mock(), "telebot": Mock()}
+        self.env["time"] = SimpleNamespace(monotonic=lambda: 1000)
         self.env["_octo_notifications"].setup_values.return_value = ("http://addon:8765/octoeverywhere", "test-private-key")
         names = {"t", "chat_ok", "cmd_octo", "_notify_pause", "_send_octo_notification", "cmd_status", "_gadget_status_text"}
         self.env.update({"_lock": threading.Lock(), "_status_event": Mock(), "request_pushall": Mock(),
@@ -346,6 +347,34 @@ class BotHandlersTest(unittest.TestCase):
         self.env["bot"].send_message.assert_called_once()
         self.assertIn("חשד", self.env["bot"].send_message.call_args.args[1])
         self.assertNotIn("private image URL", str(self.env["log"].method_calls))
+
+    def test_cooled_bed_alert_includes_recent_temperature_in_photo_and_text(self):
+        self.env["_state"]["_bed_temperature"] = (34.56, 990)
+        event = {"EventType": 15, "SnapshotUrl": "https://images.example/a"}
+        self.env["_send_octo_notification"](event)
+        caption = self.env["bot"].send_photo.call_args.kwargs["caption"]
+        self.assertIn("המיטה התקררה", caption)
+        self.assertIn("34.6°C", caption)
+        self.env["bot"].send_photo.side_effect = RuntimeError("offline")
+        self.env["_send_octo_notification"](event)
+        self.assertEqual(self.env["bot"].send_message.call_args.args[1], caption)
+
+    def test_cooled_bed_missing_stale_or_invalid_reading_is_not_a_temperature(self):
+        for reading in (None, (35, 819), (35, 1001), (float("nan"), 990), (True, 990)):
+            with self.subTest(reading=reading):
+                self.env["_state"]["_bed_temperature"] = reading
+                self.env["_send_octo_notification"]({"EventType": 15})
+                text = self.env["bot"].send_message.call_args.args[1]
+                self.assertIn("אינה זמינה", text)
+                self.assertNotIn("°C", text)
+
+    def test_cooled_bed_english_and_zero_temperature(self):
+        self.env["LANGUAGE"] = "en"
+        self.env["_state"]["_bed_temperature"] = (0, 1000)
+        self.env["_send_octo_notification"]({"EventType": 15})
+        text = self.env["bot"].send_message.call_args.args[1]
+        self.assertIn("The bed has cooled down", text)
+        self.assertIn("0°C", text)
 
     def test_setup_uses_actual_addon_identity_from_supervisor(self):
         self.env["HA_AVAILABLE"] = True
