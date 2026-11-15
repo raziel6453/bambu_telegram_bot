@@ -19,7 +19,7 @@ _pause_reason = PauseReason()
 _diagnostics = PrinterDiagnostics()
 _octo_notifications = None
 
-VERSION = "2.0.26"
+VERSION = "2.0.27"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:
@@ -153,11 +153,12 @@ STRINGS = {
         "connected":         "✅ המדפסת מחוברת ({mode}) · v{version}",
         "mqtt_failed":       "❌ חיבור MQTT נכשל: {reason}",
         "disconnected":      "🔴 הבוט הופסק.",
-        "print_start":       "🖨️ ההדפסה התחילה!\n📄 קובץ: {filename}\n⚖️ משקל צפוי: {weight}\n⏱️ ETA: {eta} | יסיים ב: {finish}",
+        "print_start":       "🖨️ ההדפסה התחילה!\n📄 קובץ: {filename}",
         "print_done":        "✅ ההדפסה הסתיימה!\n📄 קובץ: {filename}\n🧵 חוט שהשתמש: {weight}\n⏱️ סה\"כ זמן: {duration}",
         "print_failed":      "❌ ההדפסה נכשלה.\n📄 קובץ: {filename}",
         "print_paused":      "⏸️ ההדפסה הושהתה.\n📄 קובץ: {filename} | {pct}% (שכבה {layer}/{total_layers})\n🔎 {reason}",
         "print_resumed":     "▶️ ההדפסה חזרה.\n📄 קובץ: {filename}",
+        "early_layer":       "✅ שכבה {completed} הסתיימה\n📄 קובץ: {filename}\n⚖️ משקל צפוי: {weight}\n📊 התקדמות: {pct}% (שכבה {layer}/{total_layers})\n⏱️ נותר: {remaining} | יסיים ב: {finish}",
         "progress":          "📊 התקדמות: {pct}% (שכבה {layer}/{total_layers})\n⏱️ נותר: {remaining} | יסיים ב: {finish}",
         "status_printing":   (
             "🖨️ *מדפיס כעת...*\n"
@@ -259,11 +260,12 @@ STRINGS = {
         "connected":         "✅ Printer connected ({mode}) · v{version}",
         "mqtt_failed":       "❌ MQTT connection failed: {reason}",
         "disconnected":      "🔴 Bot stopped.",
-        "print_start":       "🖨️ Print started!\n📄 File: {filename}\n⚖️ Est. filament: {weight}\n⏱️ ETA: {eta} | Finishes at: {finish}",
+        "print_start":       "🖨️ Print started!\n📄 File: {filename}",
         "print_done":        "✅ Print finished!\n📄 File: {filename}\n🧵 Filament used: {weight}\n⏱️ Total time: {duration}",
         "print_failed":      "❌ Print failed.\n📄 File: {filename}",
         "print_paused":      "⏸️ Print paused.\n📄 File: {filename} | {pct}% (Layer {layer}/{total_layers})\n🔎 {reason}",
         "print_resumed":     "▶️ Print resumed.\n📄 File: {filename}",
+        "early_layer":       "✅ Layer {completed} completed\n📄 File: {filename}\n⚖️ Est. filament: {weight}\n📊 Progress: {pct}% (Layer {layer}/{total_layers})\n⏱️ Remaining: {remaining} | Finishes at: {finish}",
         "progress":          "📊 Progress: {pct}% (Layer {layer}/{total_layers})\n⏱️ Remaining: {remaining} | Finishes at: {finish}",
         "status_printing":   (
             "🖨️ *Currently Printing...*\n"
@@ -695,6 +697,7 @@ _state = {
     "layer_num":          0,
     "total_layer_num":    0,
     "last_milestone":     0,
+    "last_layer_notice":  0,
     "print_weight":       0.0,
     "tray_now":           255,
     "spool_start_weight": None,
@@ -714,7 +717,7 @@ def _restore_state():
     if not saved:
         return
     for key in ("printing", "gcode_state", "filename", "mc_percent",
-                "mc_remaining_time", "last_milestone", "print_weight",
+                "mc_remaining_time", "last_milestone", "last_layer_notice", "print_weight",
                 "tray_now", "spool_start_weight", "filament_used"):
         if key in saved:
             _state[key] = saved[key]
@@ -734,6 +737,7 @@ def _persist_state():
         "mc_percent":         _state["mc_percent"],
         "mc_remaining_time":  _state["mc_remaining_time"],
         "last_milestone":     _state["last_milestone"],
+        "last_layer_notice":  _state.get("last_layer_notice", 0),
         "print_weight":       _state["print_weight"],
         "tray_now":           _state["tray_now"],
         "spool_start_weight": _state["spool_start_weight"],
@@ -938,6 +942,9 @@ def printer_cmd(cmd: dict) -> bool:
 def _on_print_start(mc_percent, mc_remaining, filename, weight):
     _state["printing"]       = True
     _state["last_milestone"] = 0
+    # When first seen mid-print, do not replay already completed layers.
+    _state["last_layer_notice"] = max(
+        (m for m in (1, 3) if _state.get("layer_num", 0) > m), default=0)
 
     # Backdate start_time if we're mid-print on fresh connect
     if 1 < mc_percent < 100 and mc_remaining > 0:
@@ -970,11 +977,8 @@ def _on_print_start(mc_percent, mc_remaining, filename, weight):
     if weight > 0:
         _state["print_weight"] = weight
 
-    rem   = smart_remaining()
-    w_str = f"{weight:.1f}g" if weight > 0 else "–"
     log.info(f"Print started: {filename}")
-    tg_photo(t("print_start", filename=filename or "–", weight=w_str,
-               eta=fmt_mins(rem), finish=finish_time(rem)))
+    tg_photo(t("print_start", filename=filename or "–"))
     _persist_state()
 
 
@@ -982,6 +986,8 @@ def _on_reconnect_recovery(mc_percent, mc_remaining):
     """Silently recover printing=True after bot restart mid-print."""
     _state["printing"] = True
     log.info(f"Mid-print reconnect recovery at {mc_percent}%")
+    _state["last_layer_notice"] = max(
+        (m for m in (1, 3) if _state.get("layer_num", 0) > m), default=0)
 
     if not _state["start_time"] and mc_percent and mc_remaining:
         try:
@@ -995,6 +1001,36 @@ def _on_reconnect_recovery(mc_percent, mc_remaining):
     for m in (25, 50, 75):
         if mc_percent >= m:
             _state["last_milestone"] = m
+    _persist_state()
+
+
+def _notify_early_layers():
+    """Entering layer 2/4 confirms layer 1/3 completed; keep notices durable."""
+    layer = _state.get("layer_num", 0)
+    if type(layer) is not int:
+        return
+    completed = max((m for m in (1, 3) if layer > m), default=0)
+    if completed <= _state.get("last_layer_notice", 0):
+        return
+    # If reports skipped both thresholds, send one current status, not two.
+    _state["last_layer_notice"] = completed
+    weight = _state.get("print_weight", 0)
+    if HA_AVAILABLE:
+        entity = _ha_weight_entity()
+        raw = _ha_sensor(entity) if entity else None
+        try:
+            value = float(str(raw).replace("g", "").strip())
+            if math.isfinite(value) and value > 0:
+                weight = value
+                _state["print_weight"] = value
+        except (TypeError, ValueError):
+            pass
+    rem = smart_remaining()
+    tg_photo(t("early_layer", completed=completed, filename=_state.get("filename") or "–",
+               weight=f"{weight:.1f}g" if weight > 0 else "–",
+               pct=_state.get("mc_percent", 0), layer=layer,
+               total_layers=_state.get("total_layer_num", 0),
+               remaining=fmt_mins(rem), finish=finish_time(rem)))
     _persist_state()
 
 
@@ -1224,6 +1260,8 @@ def on_message(client, userdata, msg):
 
         if gcode_state == "RUNNING" and prev_state in ("PREPARE", "IDLE", "FINISH", "FAILED", ""):
             # Fresh print start
+            if "layer_num" not in print_data:
+                _state["layer_num"] = 0  # Do not inherit the previous job's last layer.
             _on_print_start(mc_percent, mc_remaining, filename, new_weight)
 
         elif gcode_state == "RUNNING" and not was_printing:
@@ -1259,6 +1297,9 @@ def on_message(client, userdata, msg):
         if gcode_state == "PAUSE" and prev_state == "PAUSE" and _pause_reason.code and _pause_reason.announced is not None and _pause_reason.announced != _pause_reason.code:
             _notify_pause("⏸️ 🔎 " + _pause_reason.describe(LANGUAGE, _state.get("tray_now")))
             _pause_reason.announced = _pause_reason.code
+
+        if gcode_state == "RUNNING" and "layer_num" in print_data:
+            _notify_early_layers()
 
         # ── AMS slot data ──────────────────────────────────────────────────
         ams_data = ams_block.get("ams", [])

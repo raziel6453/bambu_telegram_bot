@@ -9,7 +9,7 @@ A Telegram bot that monitors your **Bambu Lab 3D printer** (A1 / P1 / X1 series)
 - 📡 **Bulletproof MQTT** — Prioritizes local network connections with automatic failover to Bambu Cloud and auto-reconnects.
 - 💾 **State Persistence** — Survives Add-on restarts. Recovers mid-print state silently without duplicate start alerts.
 - 📸 **Camera snapshots** — included on print start, progress milestones (25/50/75%), and completion.
-- 📬 **Smart notifications** — print start, progress, completion, failure, low-filament, and new spool detection.
+- 📬 **Smart notifications** — a short start notice, status after layers 1 and 3 finish (when layers 2 and 4 begin), then the existing 25/50/75% milestones, completion, failure, low-filament, and new spool detection. Early status notices include updated weight and time estimates and are saved across restarts. If MQTT skips both early thresholds, only one current status is sent.
 - 🚨 **OctoEverywhere alerts** — optional Gadget failure warnings, intervention requests and bed-cooled notices, with duplicate filtering.
 - 🎛️ **Remote control** — pause, resume, and cancel prints directly from Telegram.
 - 📋 **Print history** — every completed print is logged; view the last 10 with `/history`.
