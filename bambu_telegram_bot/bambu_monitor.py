@@ -13,13 +13,15 @@ from inventory_share import start_inventory_share
 from printer_diagnostics import PrinterDiagnostics
 from pause_reason import PauseReason
 from octoeverywhere_notifications import start_notifications, notification_text
+from gadget_guard import GadgetGuard, urgent_text
 
 _pause_reason = PauseReason()
 
 _diagnostics = PrinterDiagnostics()
 _octo_notifications = None
+_gadget_guard = None
 
-VERSION = "2.0.27"
+VERSION = "2.0.28"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 try:
@@ -938,6 +940,63 @@ def printer_cmd(cmd: dict) -> bool:
     return _mqtt_publish({"print": {"sequence_id": "0", **cmd}})
 
 
+def _gadget_printer_state():
+    # Called with _lock held by the pause callback as well as by the worker.
+    start = _state.get("start_time")
+    reported = _state.get("_last_print_report")
+    fresh = bool(_mqtt_client and _mqtt_client.is_connected()
+                 and _state.get("_live_gcode") and reported is not None
+                 and 0 <= time.monotonic() - reported <= 30)
+    return {"job": f"{start.isoformat()}|{_state.get('filename', '')}" if start else None,
+            "started": start.timestamp() if start else 0,
+            "filename": _state.get("filename", ""), "state": _state.get("gcode_state"),
+            "fresh": fresh}
+
+
+def _gadget_snapshot():
+    with _lock:
+        return _gadget_printer_state()
+
+
+def _gadget_pause(job):
+    with _lock:
+        current = _gadget_printer_state()
+        if not current["fresh"] or current["job"] != job or current["state"] != "RUNNING":
+            return False
+        result = _mqtt_client.publish(f"device/{PRINTER_SERIAL}/request", json.dumps(
+            {"print": {"sequence_id": "0", "command": "pause"}}))
+        return result.rc == 0  # Broker enqueue success only, not printer confirmation.
+
+
+def _send_gadget_urgent(record):
+    keyboard = telebot.types.InlineKeyboardMarkup()
+    keyboard.add(telebot.types.InlineKeyboardButton(
+        "✅ ראיתי — השתק תזכורות" if LANGUAGE == "he" else "✅ Acknowledge — silence reminders",
+        callback_data=f"gadget_ack_{record['id']}"))
+    if record["event"].get("QuickViewUrl"):
+        keyboard.add(telebot.types.InlineKeyboardButton(
+            t("octo_view"), url=record["event"]["QuickViewUrl"]))
+    bot.send_message(TELEGRAM_CHAT_ID, urgent_text(record, LANGUAGE),
+                     reply_markup=keyboard, parse_mode=None, disable_notification=False, timeout=15)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("gadget_ack_"))
+def cb_gadget_ack(call):
+    if not call.message or not chat_ok(call.message):
+        return
+    try:
+        ok = _gadget_guard and _gadget_guard.acknowledge(call.data.removeprefix("gadget_ack_"))
+    except OSError:
+        ok = False
+    if ok:
+        text = ("התזכורות הושתקו. ההדפסה לא חודשה." if LANGUAGE == "he"
+                else "Reminders silenced. Printing was not resumed.")
+    else:
+        text = ("האישור לא נשמר. נסה שוב." if LANGUAGE == "he"
+                else "Acknowledgment was not saved. Please retry.")
+    bot.answer_callback_query(call.id, text=text, show_alert=True)
+
+
 # ── Print State Machine Handlers ──────────────────────────────────────────────
 def _on_print_start(mc_percent, mc_remaining, filename, weight):
     _state["printing"]       = True
@@ -1160,6 +1219,7 @@ def on_connect(client, userdata, flags, rc):
     userdata["rc"] = rc
     mode = userdata["mode"]
     if rc == 0:
+        _state["_live_gcode"] = False
         _mqtt_client = client
         topic = f"device/{PRINTER_SERIAL}/report"
         client.subscribe(topic)
@@ -1178,6 +1238,7 @@ def on_connect(client, userdata, flags, rc):
 
 
 def on_disconnect(client, userdata, rc):
+    _state["_live_gcode"] = False
     if rc != 0:
         log.warning(f"MQTT disconnected unexpectedly (rc={rc}), will auto-reconnect…")
 
@@ -1197,6 +1258,9 @@ def on_message(client, userdata, msg):
 
     with _lock:
         _status_event.set()
+        _state["_last_print_report"] = time.monotonic()
+        if "gcode_state" in print_data:
+            _state["_live_gcode"] = True
         _state["_raw_print"] = print_data
         # MQTT reports are incremental; unrelated messages must not refresh the
         # age of a temperature sample. This transient reading is not restored.
@@ -2218,9 +2282,19 @@ def main():
         options.get("inventory_share_token", "").strip(),
     )
 
-    global _octo_notifications
+    global _octo_notifications, _gadget_guard
+    if options.get("octoeverywhere_notifications", False):
+        try:
+            _gadget_guard = GadgetGuard(os.path.join(DATA_DIR, "gadget_incidents.json"),
+                                        _gadget_snapshot, _gadget_pause, _send_gadget_urgent)
+            _gadget_guard.start()
+        except Exception as error:
+            _gadget_guard = None
+            log.error("Gadget automatic pause could not start (%s)", type(error).__name__)
+            tg_send("❌ Gadget auto-pause unavailable. Check BambuBuddy logs; pause manually if needed.")
     _octo_notifications = start_notifications(
         options.get("octoeverywhere_notifications", False), DATA_DIR, _send_octo_notification,
+        gadget_handler=_gadget_guard.receive if _gadget_guard else None,
     )
 
     # Start Telegram polling in background thread
@@ -2256,6 +2330,8 @@ def main():
         share_stop.set()
         if _octo_notifications:
             _octo_notifications.close()
+        if _gadget_guard:
+            _gadget_guard.close()
 
 
 if __name__ == "__main__":

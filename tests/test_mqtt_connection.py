@@ -17,6 +17,7 @@ class MqttConnectionTest(unittest.TestCase):
             "mqtt": self.mqtt, "ssl": ssl, "time": Mock(), "threading": Mock(),
             "log": Mock(), "tg_send": Mock(), "on_message": Mock(),
             "request_pushall": Mock(), "_mqtt_client": None,
+            "_state": {}, "_gadget_guard": None,
             "PRINTER_SERIAL": "private-serial", "PRINTER_IP": "printer.invalid",
             "PRINTER_PASSWORD": "access-code", "VERSION": "test",
             "BAMBU_USERNAME": "user@bambu.invalid", "BAMBU_PASSWORD_": "password",

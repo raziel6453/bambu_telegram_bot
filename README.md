@@ -377,7 +377,7 @@ material, spool ID and remaining grams. The picker has navigation buttons;
 long inventory lists continue in additional messages without truncation.
 This updates the bot's Spoolman mapping only, not printer material settings.
 
-## OctoEverywhere alerts (v2.0.19)
+## OctoEverywhere alerts and automatic pause (v2.0.28)
 
 From v2.0.23, `/status` also shows the **last Gadget alert received by the bot**:
 warning or Gadget-initiated pause, file name and elapsed time since receipt.
@@ -385,8 +385,8 @@ This is historical information, not live monitoring status. With no recorded
 alert, the monitoring state is shown as unknown; silence does not mean a print
 is healthy. No extra token or setup is needed if the webhook is already configured.
 The last alert survives restarts. Only alerts received after this update are
-recorded, and other OctoEverywhere events do not clear it. Smart Pause events
-(event 8) update this history without adding another Telegram pause notification.
+recorded, and other OctoEverywhere events do not clear it. Gadget warnings and
+Smart Pause events (7/8) also enter the acknowledged urgent-alert flow below.
 
 Receive these three additional alerts in the existing BambuBuddy Telegram chat:
 
@@ -396,9 +396,45 @@ Receive these three additional alerts in the existing BambuBuddy Telegram chat:
 
 The notification can include OctoEverywhere's event snapshot and an **Open printer**
 button. If the image cannot be sent, the text still arrives. These snapshots do not
-use HA camera entities or require changing `/cam`. No automatic pause or other
-printer action is enabled by this integration. Events depend on the printer and
-OctoEverywhere plugin reporting them.
+use HA camera entities or require changing `/cam`. Gadget incidents use urgent text
+with an acknowledgment button; other selected alerts retain their event snapshots.
+Events depend on the printer and OctoEverywhere plugin reporting them.
+
+### Gadget automatic pause and urgent reminders
+
+With `octoeverywhere_notifications` enabled, v2.0.28 automatically requests **Pause**
+when a Gadget warning reaches the bot for the matched, actively printing job.
+This is triggered by a **possible failure warning**, so false positives can pause a print.
+OctoEverywhere's own Smart Pause is a separate setting; an event 7 warning alone
+previously only produced a message in BambuBuddy.
+
+- A pause request is retried every **10 seconds** while the same job is still running,
+  until fresh MQTT status confirms `PAUSE` or you acknowledge the incident.
+  MQTT publication success alone is **not** displayed as a confirmed pause.
+- An urgent Telegram message arrives immediately, then every **60 seconds** until
+  you press **Acknowledge — silence reminders**. Confirmed pause produces a prompt
+  status update. The button stops this incident's reminders and pause attempts;
+  it **never resumes** printing. Inspect the print and use `/resume` separately.
+- Telegram messages request normal notification sound, but cannot override your
+  phone's muted chat or Focus settings. A Telegram failure does not prevent the
+  pause attempt; failed urgent deliveries retry after 10 seconds.
+- The authenticated print-start webhook (event 1) ties OctoEverywhere's PrintId to
+  the local job; completion/failure (2/3) clears that binding. These events do not
+  add duplicate Telegram messages. The filename must match (ignoring known file
+  extensions), and MQTT must be connected with a state report within 30 seconds.
+  Stale, missing or mismatched job data causes an urgent **manual-check** alert,
+  not a command against an unidentified print. Allow the bot to receive the start
+  of the **next print after installation** for automatic pause to work.
+- Pending incidents and acknowledgments survive restarts in `gadget_incidents.json`.
+  Repeated warnings for an unacknowledged incident do not create extra reminder
+  loops. After acknowledgment, a later warning can open a new incident once the
+  existing **10-minute duplicate window**, measured from first receipt, has elapsed.
+  Each incident has its own acknowledgment button, so an old button cannot mute a
+  new incident. Reminders continue even if the print ends, until acknowledged.
+
+No new API key or connection is needed. Keep the existing LAN webhook configured
+for this printer. `/status` still shows the last received Gadget event as history;
+it is not a live Gadget monitoring check.
 
 ### Setup
 
@@ -429,8 +465,9 @@ stops the listener; remove or disable the webhook in OctoEverywhere as well.
 
 ### Duplicate filtering and delivery
 
-- Start, progress, finish, failure, pause/resume, filament-change and other
-  unselected webhook events are acknowledged but not forwarded. The existing bot
+- Start, finish and failure webhooks maintain the Gadget job binding without
+  being forwarded. Progress, pause/resume, filament-change and other unselected
+  events are acknowledged but not forwarded. The existing bot
   continues to handle its MQTT notifications and Spoolman accounting.
 - Identical Gadget warnings and intervention requests are suppressed for **10 minutes**
   per printer and print. A different error code or print can notify immediately.
@@ -441,7 +478,8 @@ stops the listener; remove or disable the webhook in OctoEverywhere as well.
   explanation arrive first. Unknown codes and different filenames remain separate.
 - Deduplication records and pending notifications survive restarts. Webhooks are
   acknowledged after being queued on disk, without waiting for Telegram. Failed
-  deliveries retry with a delay, for up to 15 minutes; older pending alerts expire.
+  ordinary deliveries retry with a delay, for up to 15 minutes; older pending ordinary
+  alerts expire. Gadget urgent reminders persist until acknowledged as described above.
   As with other Telegram sends, a lost API response can make delivery ambiguous.
 
 This uses OctoEverywhere's existing notification service, rather than submitting

@@ -1,7 +1,8 @@
 """Authenticated LAN webhooks for selected OctoEverywhere notifications.
 
-Only Gadget warnings (7), user intervention (12), bed cooled (15), and setup
-tests (16) are forwarded. Gadget pauses (8) are retained for status only.
+User intervention (12), bed cooled (15), and setup tests (16) are forwarded.
+An optional Gadget handler receives warnings/pauses (7/8) and job lifecycle (1/2/3).
+Without it, warnings are forwarded and Gadget pauses are retained for status only.
 MQTT remains the source of ordinary print events.
 """
 import hashlib
@@ -113,10 +114,11 @@ def notification_text(event, language, bed_temperature=None):
 class NotificationRelay:
     """Persist before acknowledging, serialize deliveries, and suppress repeats."""
 
-    def __init__(self, path, sender, *, clock=time.time):
+    def __init__(self, path, sender, *, clock=time.time, gadget_handler=None):
         self.path = Path(path)
         self.sender = sender
         self.clock = clock
+        self.gadget_handler = gadget_handler
         self.lock = threading.RLock()
         self.delivery_lock = threading.Lock()
         self.wake = threading.Event()
@@ -188,7 +190,8 @@ class NotificationRelay:
         event_type = payload.get("EventType")
         if type(event_type) is not int:
             return 400
-        if event_type not in EVENTS and event_type != 8:
+        lifecycle = bool(self.gadget_handler) and event_type in (1, 2, 3)
+        if event_type not in EVENTS and event_type != 8 and not lifecycle:
             return 200  # Ordinary lifecycle events are still handled by MQTT.
         printer = payload.get("PrinterId")
         print_id = payload.get("PrintId")
@@ -196,7 +199,7 @@ class NotificationRelay:
             return 400
         if print_id is not None and (not isinstance(print_id, str) or len(print_id) > 200):
             return 400
-        if event_type in (7, 8, 15) and not print_id:
+        if (event_type in (7, 8, 15) or lifecycle) and not print_id:
             return 400
         print_id = print_id or ""
         event = {"EventType": event_type, "PrinterId": printer, "PrintId": print_id or "",
@@ -209,6 +212,8 @@ class NotificationRelay:
         code = error_code(payload.get("PlatformErrorCode"))
         if code:
             event["PlatformErrorCode"] = code
+        if lifecycle:
+            return self.gadget_handler(event)  # Correlation only; no duplicate lifecycle message.
         if event_type in (7, 8):
             # Retain receipt independently of Telegram delivery/dedup. These are
             # historical warnings, never evidence that monitoring is healthy.
@@ -224,6 +229,8 @@ class NotificationRelay:
                     else:
                         self.state["last_gadget"] = previous
                     return 503
+            if self.gadget_handler:
+                return self.gadget_handler(event)
             if event_type == 8:
                 return 200  # Status only; existing MQTT pause notices remain unchanged.
         details = (code or event["Error"].strip()) if event_type == 12 else ""
@@ -376,11 +383,12 @@ class NotificationRelay:
         return f"http://{host}:{PORT}{WEBHOOK_PATH}", self.state["secret"]
 
 
-def start_notifications(enabled, data_dir, sender):
+def start_notifications(enabled, data_dir, sender, *, gadget_handler=None):
     if enabled is not True:
         return None
     try:
-        relay = NotificationRelay(Path(data_dir) / "octoeverywhere_notifications.json", sender)
+        relay = NotificationRelay(Path(data_dir) / "octoeverywhere_notifications.json", sender,
+                                  gadget_handler=gadget_handler)
         relay.start()
     except Exception as error:
         log.error("OctoEverywhere notifications could not start (%s)", type(error).__name__)
